@@ -91,18 +91,18 @@ pub mod gas_oracle {
     /// The default maximum number of allowed reward percentiles
     pub const MAX_REWARD_PERCENTILE_COUNT: u64 = 100;
 
-    /// Number of recent blocks to check for gas price
-    pub const DEFAULT_GAS_PRICE_BLOCKS: u32 = 20;
+    /// Number of recent blocks to check for gas price (original 20)
+    pub const DEFAULT_GAS_PRICE_BLOCKS: u32 = 60;
 
     /// The percentile of gas prices to use for the estimate
     pub const DEFAULT_GAS_PRICE_PERCENTILE: u32 = 60;
 
     /// Maximum transaction priority fee (or gas price before London Fork) to be recommended by the
-    /// gas price oracle
-    pub const DEFAULT_MAX_GAS_PRICE: U256 = U256::from_limbs([500_000_000_000u64, 0, 0, 0]);
+    /// gas price oracle (original value 500 GWEI - 500_000_000_000u64) Changed to the 5 GWEI for the testnet
+    pub const DEFAULT_MAX_GAS_PRICE: U256 = U256::from_limbs([5_000_000_000u64, 0, 0, 0]);
 
-    /// The default minimum gas price, under which the sample will be ignored
-    pub const DEFAULT_IGNORE_GAS_PRICE: U256 = U256::from_limbs([2u64, 0, 0, 0]);
+    /// The default minimum gas price, under which the sample will be ignored (original 2)
+    pub const DEFAULT_IGNORE_GAS_PRICE: U256 = U256::from_limbs([0u64, 0, 0, 0]);
 
     /// The default gas limit for `eth_call` and adjacent calls.
     ///

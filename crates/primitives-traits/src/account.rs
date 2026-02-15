@@ -21,6 +21,12 @@ pub mod compact_ids {
 
     /// Identifier for [`Eip7702`](revm_bytecode::Bytecode::Eip7702).
     pub const EIP7702_BYTECODE_ID: u8 = 4;
+
+    /// Identifier for [`Rwasm`](revm_primitives::Bytecode::OwnableAccount).
+    pub const OWNABLE_ACCOUNT_BYTECODE_ID: u8 = 0x44; // ASCII code for the latter 'D'
+
+    /// Identifier for [`Rwasm`](revm_primitives::Bytecode::Rwasm).
+    pub const RWASM_BYTECODE_ID: u8 = 0x52; // ASCII code for the letter 'R'
 }
 
 /// An Ethereum account.
@@ -129,11 +135,16 @@ impl reth_codecs::Compact for Bytecode {
     where
         B: bytes::BufMut + AsMut<[u8]>,
     {
-        use compact_ids::{EIP7702_BYTECODE_ID, LEGACY_ANALYZED_BYTECODE_ID};
+        use compact_ids::{
+            EIP7702_BYTECODE_ID, LEGACY_ANALYZED_BYTECODE_ID, OWNABLE_ACCOUNT_BYTECODE_ID,
+            RWASM_BYTECODE_ID,
+        };
 
         let bytecode = match &self.0 {
             RevmBytecode::LegacyAnalyzed(analyzed) => analyzed.bytecode(),
             RevmBytecode::Eip7702(eip7702) => eip7702.raw(),
+            RevmBytecode::Rwasm(bytes) => bytes.raw(),
+            RevmBytecode::OwnableAccount(account) => account.raw(),
         };
         buf.put_u32(bytecode.len() as u32);
         buf.put_slice(bytecode.as_ref());
@@ -148,6 +159,14 @@ impl reth_codecs::Compact for Bytecode {
             }
             RevmBytecode::Eip7702(_) => {
                 buf.put_u8(EIP7702_BYTECODE_ID);
+                1
+            }
+            RevmBytecode::OwnableAccount(_) => {
+                buf.put_u8(OWNABLE_ACCOUNT_BYTECODE_ID);
+                1
+            }
+            RevmBytecode::Rwasm(_) => {
+                buf.put_u8(RWASM_BYTECODE_ID);
                 1
             }
         };
@@ -191,7 +210,7 @@ impl reth_codecs::Compact for Bytecode {
                     revm_bytecode::JumpTable::from_slice(buf, jump_table_len),
                 ))
             }
-            EIP7702_BYTECODE_ID => {
+            EIP7702_BYTECODE_ID | OWNABLE_ACCOUNT_BYTECODE_ID | RWASM_BYTECODE_ID => {
                 // EIP-7702 bytecode objects will be decoded from the raw bytecode
                 Self(RevmBytecode::new_raw(bytes))
             }

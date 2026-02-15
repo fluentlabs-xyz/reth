@@ -361,11 +361,19 @@ where
         }
 
         // Check whether the init code size has been exceeded.
-        if self.fork_tracker.is_shanghai_activated() &&
-            let Err(err) = transaction.ensure_max_init_code_size(MAX_INIT_CODE_BYTE_SIZE)
-        {
-            return Err(TransactionValidationOutcome::Invalid(transaction, err))
+        if self.fork_tracker.is_shanghai_activated() {
+            // validate max init code size
+            let max_init_code_size =
+                revm_primitives::wasm::wasm_max_code_size(&transaction.input()).unwrap_or(MAX_INIT_CODE_BYTE_SIZE);
+            if let Err(err) = transaction.ensure_max_init_code_size(max_init_code_size) {
+                return Err(TransactionValidationOutcome::Invalid(transaction, err));
+            }
         }
+        // if self.fork_tracker.is_shanghai_activated() &&
+        //     let Err(err) = transaction.ensure_max_init_code_size(MAX_INIT_CODE_BYTE_SIZE)
+        // {
+        //     return Err(TransactionValidationOutcome::Invalid(transaction, err))
+        // }
 
         // Checks for gas limit
         let transaction_gas_limit = transaction.gas_limit();

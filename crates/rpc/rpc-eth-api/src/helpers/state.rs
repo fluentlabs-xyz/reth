@@ -8,6 +8,8 @@ use alloy_eips::BlockId;
 use alloy_primitives::{Address, Bytes, B256, U256};
 use alloy_rpc_types_eth::{Account, AccountInfo, EIP1186AccountProofResponse};
 use alloy_serde::JsonStorageKey;
+use fluentbase_evm::EthereumMetadata;
+use fluentbase_types::PRECOMPILE_EVM_RUNTIME;
 use futures::Future;
 use reth_errors::RethError;
 use reth_evm::{ConfigureEvm, EvmEnvFor};
@@ -46,6 +48,14 @@ pub trait EthState: LoadState + SpawnBlocking {
         block_id: Option<BlockId>,
     ) -> impl Future<Output = Result<Bytes, Self::Error>> + Send {
         LoadState::get_code(self, address, block_id)
+    }
+    /// Returns code of given account, at given blocknumber.
+    fn get_raw_code(
+        &self,
+        address: Address,
+        block_id: Option<BlockId>,
+    ) -> impl Future<Output = Result<Bytes, Self::Error>> + Send {
+        LoadState::get_raw_code(self, address, block_id)
     }
 
     /// Returns balance of given account, at given blocknumber.
@@ -114,7 +124,7 @@ pub trait EthState: LoadState + SpawnBlocking {
                 .ok_or(EthApiError::HeaderNotFound(block_id))?;
             let max_window = self.max_proof_window();
             if chain_info.best_number.saturating_sub(block_number) > max_window {
-                return Err(EthApiError::ExceedsMaxProofWindow.into())
+                return Err(EthApiError::ExceedsMaxProofWindow.into());
             }
 
             self.spawn_blocking_io_fut(move |this| async move {
@@ -149,7 +159,7 @@ pub trait EthState: LoadState + SpawnBlocking {
                 .ok_or(EthApiError::HeaderNotFound(block_id))?;
             let max_window = this.max_proof_window();
             if chain_info.best_number.saturating_sub(block_number) > max_window {
-                return Err(EthApiError::ExceedsMaxProofWindow.into())
+                return Err(EthApiError::ExceedsMaxProofWindow.into());
             }
 
             let balance = account.balance;
@@ -384,7 +394,42 @@ pub trait LoadState:
     }
 
     /// Returns code of given account, at the given identifier.
+    /// Returns the account’s original code (runtime compatible).
     fn get_code(
+        &self,
+        address: Address,
+        block_id: Option<BlockId>,
+    ) -> impl Future<Output = Result<Bytes, Self::Error>> + Send
+    where
+        Self: SpawnBlocking,
+    {
+        self.spawn_blocking_io_fut(move |this| async move {
+            let bytecode = this
+                .state_at_block_id_or_latest(block_id)
+                .await?
+                .account_code(&address)
+                .map_err(Self::Error::from_eth_err)?
+                .unwrap_or_default();
+
+            match &bytecode.0 {
+                // Only this very runtime + owner gets «stripped» code
+                reth_revm::bytecode::Bytecode::OwnableAccount(acc)
+                    if acc.owner_address == PRECOMPILE_EVM_RUNTIME =>
+                {
+                    let evm_bytecode = EthereumMetadata::read_from_bytes(&acc.metadata)
+                        .as_ref()
+                        .map(EthereumMetadata::code_copy)
+                        .unwrap_or_default();
+                    Ok(evm_bytecode)
+                }
+                // Everything else – return as-is
+                _ => Ok(bytecode.original_bytes()),
+            }
+        })
+    }
+
+    /// Returns code of given account, at the given identifier.
+    fn get_raw_code(
         &self,
         address: Address,
         block_id: Option<BlockId>,
