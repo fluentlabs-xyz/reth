@@ -59,6 +59,10 @@ auto_impl.workspace = true
 dyn-clone.workspace = true
 tracing.workspace = true
 
+# fluentbase
+fluentbase-types.workspace = true
+fluentbase-evm.workspace = true
+
 [features]
 js-tracer = ["revm-inspectors/js-tracer", "reth-rpc-eth-types/js-tracer"]
 client = ["jsonrpsee/client", "jsonrpsee/async-client"]

@@ -376,8 +376,10 @@ where
         if self.fork_tracker.is_shanghai_activated() {
             let max_initcode_size =
                 self.fork_tracker.max_initcode_size.load(std::sync::atomic::Ordering::Relaxed);
-            if let Err(err) = transaction.ensure_max_init_code_size(max_initcode_size) {
-                return Err(TransactionValidationOutcome::Invalid(transaction, err))
+            let max_init_code_size =
+                revm_primitives::wasm::wasm_max_code_size(&transaction.input()).unwrap_or(max_initcode_size);
+            if let Err(err) = transaction.ensure_max_init_code_size(max_init_code_size) {
+                return Err(TransactionValidationOutcome::Invalid(transaction, err));
             }
         }
 

@@ -582,8 +582,8 @@ pub trait Call:
         DB: Database<Error = EvmDatabaseError<ProviderError>> + fmt::Debug,
     {
         let mut evm = self.evm_config().evm_with_env(db, evm_env);
-        let res = evm.transact(tx_env).map_err(Self::Error::from_evm_err)?;
-
+        let mut res = evm.transact(tx_env.clone()).map_err(Self::Error::from_evm_err)?;
+        self.restore_create_output(&mut res, &tx_env);
         Ok(res)
     }
 
@@ -601,9 +601,44 @@ pub trait Call:
         I: InspectorFor<Self::Evm, DB>,
     {
         let mut evm = self.evm_config().evm_with_env_and_inspector(db, evm_env, inspector);
-        let res = evm.transact(tx_env).map_err(Self::Error::from_evm_err)?;
+        let mut res = evm.transact(tx_env.clone()).map_err(Self::Error::from_evm_err)?;
+        self.restore_create_output(&mut res, &tx_env);
 
         Ok(res)
+    }
+
+    /// Restores runtime bytecode to output for contract creations during simulation calls.
+    /// Needed because we store bytecode in state but return empty bytes by default.
+    fn restore_create_output(
+        &self,
+        res: &mut ResultAndState<HaltReasonFor<Self::Evm>>,
+        tx_env: &TxEnvFor<Self::Evm>,
+    ) {
+        if res.result.is_success() && tx_env.kind().is_create() {
+            let Some(addr) = res.result.created_address() else { return };
+            let Some(account) = res.state.get(&addr) else { return };
+            let Some(code) = account.info.code.as_ref() else { return };
+
+            let runtime_code = match code {
+                reth_revm::bytecode::Bytecode::OwnableAccount(acc)
+                    if acc.owner_address == fluentbase_types::PRECOMPILE_EVM_RUNTIME =>
+                {
+                    fluentbase_evm::EthereumMetadata::read_from_bytes(&acc.metadata)
+                        .and_then(|m| Some(m.code_copy()))
+                }
+                _ => None,
+            };
+
+            use reth_revm::context::result::{ExecutionResult, Output};
+            if let Some(bytes) = runtime_code {
+                if let ExecutionResult::Success {
+                    output: Output::Create(ref mut out, ..), ..
+                } = res.result
+                {
+                    *out = bytes;
+                }
+            }
+        }
     }
 
     /// Executes the call request at the given [`BlockId`].

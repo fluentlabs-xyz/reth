@@ -2,7 +2,7 @@
 //! [`LocalMiner`](super::LocalMiner).
 
 use alloy_consensus::BlockHeader;
-use alloy_primitives::{Address, B256};
+use alloy_primitives::{address, B256};
 use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_payload_primitives::PayloadAttributesBuilder;
@@ -48,7 +48,7 @@ where
         EthPayloadAttributes {
             timestamp,
             prev_randao: B256::random(),
-            suggested_fee_recipient: Address::random(),
+            suggested_fee_recipient: address!("0000000000000000000000000000000000520fee"),
             withdrawals: self
                 .chain_spec
                 .is_shanghai_active_at_timestamp(timestamp)
