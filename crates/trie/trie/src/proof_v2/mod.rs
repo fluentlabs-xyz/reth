@@ -16,7 +16,7 @@ use alloy_rlp::Encodable;
 use alloy_trie::{BranchNodeCompact, TrieMask};
 use reth_execution_errors::trie::StateProofError;
 use reth_trie_common::{BranchNode, BranchNodeMasks, Nibbles, ProofTrieNode, RlpNode, TrieNode};
-use std::cmp::Ordering;
+use std::{cmp::Ordering, sync::LazyLock};
 use tracing::{instrument, trace};
 
 mod value;
@@ -35,15 +35,11 @@ static TRACE_TARGET: &str = "trie::proof_v2";
 const RLP_ENCODE_BUF_SIZE: usize = 1024;
 
 /// A [`Nibbles`] which contains 64 zero nibbles.
-static PATH_ALL_ZEROS: Nibbles = {
+static PATH_ALL_ZEROS: LazyLock<Nibbles> = LazyLock::new(||{
     let mut path = Nibbles::new();
-    let mut i = 0;
-    while i < 64 {
-        path.push_unchecked(0);
-        i += 1;
-    }
+    path.push_unchecked(0);
     path
-};
+});
 
 /// A proof calculator that generates merkle proofs using only leaf data.
 ///
