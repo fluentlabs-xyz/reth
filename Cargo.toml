@@ -484,8 +484,8 @@ op-revm = { version = "15.0.0", default-features = false }
 revm-inspectors = "0.34.0"
 
 # fluentbase
-fluentbase-types = { git = "https://github.com/fluentlabs-xyz/fluentbase", branch = "refactor/prepare-reth-release", default-features = false }
-fluentbase-evm = { git = "https://github.com/fluentlabs-xyz/fluentbase", branch = "refactor/prepare-reth-release", default-features = false, features = ["std"] }
+fluentbase-types = { git = "https://github.com/fluentlabs-xyz/fluentbase", tag = "v0.5.0", default-features = false }
+fluentbase-evm = { git = "https://github.com/fluentlabs-xyz/fluentbase", tag = "v0.5.0", default-features = false, features = ["std"] }
 #fluentbase-types = { path = "../fluentbase/crates/types", default-features = false }
 #fluentbase-evm = { path = "../fluentbase/crates/evm", default-features = false, features = ["std"] }
 
@@ -805,17 +805,17 @@ ipnet = "2.11"
 # alloy-op-evm = { git = "https://github.com/alloy-rs/evm", rev = "072c248" }
 
 # revm
-#revm = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
+revm = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
 revm-bytecode = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
-#revm-database = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
-#revm-state = { package = "revm-state", git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
+revm-database = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
+revm-state = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
 revm-primitives = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
-#revm-interpreter = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
-#revm-inspector = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
-#revm-context = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
-#revm-context-interface = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
-#revm-database-interface = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
-#op-revm = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
+revm-interpreter = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
+revm-inspector = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
+revm-context = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
+revm-context-interface = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
+revm-database-interface = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
+op-revm = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
 # alloy-evm
-#alloy-evm = { git = "https://github.com/fluentlabs-xyz/alloy-rwasm.git", branch = "v26-patched" }
+alloy-evm = { git = "https://github.com/fluentlabs-xyz/alloy-rwasm.git", branch = "v26-patched" }
 #alloy-evm = { path = "../alloy-evm/crates/evm" }
