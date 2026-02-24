@@ -779,6 +779,3 @@ revm-context = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branc
 revm-context-interface = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
 revm-database-interface = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
 op-revm = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v103-patched" }
-# alloy-evm
-alloy-evm = { git = "https://github.com/fluentlabs-xyz/alloy-rwasm.git", branch = "v26-patched" }
-#alloy-evm = { path = "../alloy-evm/crates/evm" }
