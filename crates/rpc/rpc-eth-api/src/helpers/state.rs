@@ -8,8 +8,6 @@ use alloy_eips::BlockId;
 use alloy_primitives::{Address, Bytes, B256, U256};
 use alloy_rpc_types_eth::{Account, AccountInfo, EIP1186AccountProofResponse};
 use alloy_serde::JsonStorageKey;
-use fluentbase_evm::EthereumMetadata;
-use fluentbase_types::PRECOMPILE_EVM_RUNTIME;
 use futures::Future;
 use reth_errors::RethError;
 use reth_evm::{ConfigureEvm, EvmEnvFor};
@@ -49,7 +47,8 @@ pub trait EthState: LoadState + SpawnBlocking {
     ) -> impl Future<Output = Result<Bytes, Self::Error>> + Send {
         LoadState::get_code(self, address, block_id)
     }
-    /// Returns code of given account, at given blocknumber.
+
+    /// Returns code of a given account, at a given blocknumber.
     fn get_raw_code(
         &self,
         address: Address,
@@ -124,7 +123,7 @@ pub trait EthState: LoadState + SpawnBlocking {
                 .ok_or(EthApiError::HeaderNotFound(block_id))?;
             let max_window = self.max_proof_window();
             if chain_info.best_number.saturating_sub(block_number) > max_window {
-                return Err(EthApiError::ExceedsMaxProofWindow.into());
+                return Err(EthApiError::ExceedsMaxProofWindow.into())
             }
 
             self.spawn_blocking_io_fut(move |this| async move {
@@ -159,7 +158,7 @@ pub trait EthState: LoadState + SpawnBlocking {
                 .ok_or(EthApiError::HeaderNotFound(block_id))?;
             let max_window = this.max_proof_window();
             if chain_info.best_number.saturating_sub(block_number) > max_window {
-                return Err(EthApiError::ExceedsMaxProofWindow.into());
+                return Err(EthApiError::ExceedsMaxProofWindow.into())
             }
 
             let balance = account.balance;
@@ -410,11 +409,11 @@ pub trait LoadState:
                 .account_code(&address)
                 .map_err(Self::Error::from_eth_err)?
                 .unwrap_or_default();
-
+            use fluentbase_evm::EthereumMetadata;
             match &bytecode.0 {
                 // Only this very runtime + owner gets «stripped» code
                 reth_revm::bytecode::Bytecode::OwnableAccount(acc)
-                    if acc.owner_address == PRECOMPILE_EVM_RUNTIME =>
+                    if acc.owner_address == fluentbase_types::PRECOMPILE_EVM_RUNTIME =>
                 {
                     let evm_bytecode = EthereumMetadata::read_from_bytes(&acc.metadata)
                         .as_ref()
