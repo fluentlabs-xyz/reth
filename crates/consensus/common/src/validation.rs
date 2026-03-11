@@ -14,7 +14,8 @@ use reth_primitives_traits::{
 /// Calculated as `MAX_BLOCK_SIZE` - `SAFETY_MARGIN` where
 /// `MAX_BLOCK_SIZE` = `10_485_760`
 /// `SAFETY_MARGIN` = `2_097_152`
-pub const MAX_RLP_BLOCK_SIZE: usize = 8_388_608;
+// pub const MAX_RLP_BLOCK_SIZE: usize = 8_388_608;
+pub const MAX_RLP_BLOCK_SIZE: usize = 1_835_008;
 
 /// Gas used needs to be less than gas limit. Gas used is going to be checked after execution.
 #[inline]
