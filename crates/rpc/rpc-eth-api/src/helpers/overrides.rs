@@ -1,4 +1,4 @@
-use alloy_primitives::{keccak256, map::HashMap, Address, Bytes};
+use alloy_primitives::{keccak256, map::HashMap, Address};
 use alloy_rpc_types_eth::state::{AccountOverride, StateOverride};
 use revm::{
     state::{Account, AccountStatus, Bytecode, EvmStorageSlot},
@@ -43,7 +43,7 @@ where
         info.nonce = nonce;
     }
     if let Some(code) = account_override.code {
-        info.code = try_override_evm_bytecode(&mut info, code);
+        info.code = try_override_evm_bytecode(&mut info, Bytecode::new_raw_checked(code)?);
     }
     if let Some(balance) = account_override.balance {
         info.balance = balance;
@@ -102,14 +102,28 @@ where
 
 fn try_override_evm_bytecode(
     account_info: &mut AccountInfo,
-    evm_bytecode: Bytes,
+    evm_bytecode: Bytecode,
 ) -> Option<Bytecode> {
-    let evm_code_hash = keccak256(&evm_bytecode);
-    let evm_metadata =
-        EthereumMetadata::Analyzed(AnalyzedBytecode::new(evm_bytecode, evm_code_hash));
-    let bytecode =
-        OwnableAccountBytecode::new(PRECOMPILE_EVM_RUNTIME, evm_metadata.write_to_bytes());
-    let bytecode = Bytecode::OwnableAccount(bytecode);
+    let bytecode = match evm_bytecode {
+        Bytecode::Eip7702(eip7702_bytecode) => Some(Bytecode::Eip7702(eip7702_bytecode)),
+        // For EVM bytecode we should wrap it into a bytecode that is owned by EVM
+        // runtime
+        Bytecode::LegacyAnalyzed(bytecode) => {
+            let evm_code_hash = keccak256(bytecode.original_byte_slice());
+            let evm_metadata = EthereumMetadata::Analyzed(AnalyzedBytecode::new(
+                bytecode.original_bytes(),
+                evm_code_hash,
+            ));
+            let bytecode =
+                OwnableAccountBytecode::new(PRECOMPILE_EVM_RUNTIME, evm_metadata.write_to_bytes());
+            let bytecode = Bytecode::OwnableAccount(bytecode);
+            Some(bytecode)
+        }
+        // rWasm is a trusted code, letting pass invalid bytecode without validation can cause
+        // memory out of bounds or UB, ownable accounts can only be controlled by deployer, this can
+        // be allowed once fully covered with tests and doesn't cause any side effects
+        Bytecode::Rwasm(_) | Bytecode::OwnableAccount(_) => None,
+    }?;
     account_info.code_hash = bytecode.hash_slow();
     Some(bytecode)
 }
