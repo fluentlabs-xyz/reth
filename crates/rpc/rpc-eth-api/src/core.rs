@@ -306,6 +306,14 @@ pub trait EthApi<
         block: BlockId,
     ) -> RpcResult<Option<alloy_rpc_types_eth::Account>>;
 
+    /// Returns the account details by specifying an address and a block number/tag
+    #[method(name = "getRawAccount")]
+    async fn get_raw_account(
+        &self,
+        address: Address,
+        block: BlockId,
+    ) -> RpcResult<Option<alloy_rpc_types_eth::Account>>;
+
     /// Introduced in EIP-1559, returns suggestion for the priority for dynamic fee transactions.
     #[method(name = "maxPriorityFeePerGas")]
     async fn max_priority_fee_per_gas(&self) -> RpcResult<U256>;
@@ -398,6 +406,16 @@ pub trait EthApi<
     /// This is similar to `eth_getAccount` but does not return the storage root.
     #[method(name = "getAccountInfo")]
     async fn get_account_info(
+        &self,
+        address: Address,
+        block: BlockId,
+    ) -> RpcResult<alloy_rpc_types_eth::AccountInfo>;
+
+    /// Returns the account's balance, nonce, and code.
+    ///
+    /// This is similar to `eth_getRawAccount` but does not return the storage root.
+    #[method(name = "getRawAccountInfo")]
+    async fn get_raw_account_info(
         &self,
         address: Address,
         block: BlockId,
@@ -793,6 +811,16 @@ where
         Ok(EthState::get_account(self, address, block).await?)
     }
 
+    /// Handler for: `eth_getRawAccount`
+    async fn get_raw_account(
+        &self,
+        address: Address,
+        block: BlockId,
+    ) -> RpcResult<Option<alloy_rpc_types_eth::Account>> {
+        trace!(target: "rpc::eth", "Serving eth_getAccount");
+        Ok(EthState::get_raw_account(self, address, block).await?)
+    }
+
     /// Handler for: `eth_maxPriorityFeePerGas`
     async fn max_priority_fee_per_gas(&self) -> RpcResult<U256> {
         trace!(target: "rpc::eth", "Serving eth_maxPriorityFeePerGas");
@@ -903,6 +931,16 @@ where
 
     /// Handler for: `eth_getAccountInfo`
     async fn get_account_info(
+        &self,
+        address: Address,
+        block: BlockId,
+    ) -> RpcResult<alloy_rpc_types_eth::AccountInfo> {
+        trace!(target: "rpc::eth", "Serving eth_getAccountInfo");
+        Ok(EthState::get_account_info(self, address, block).await?)
+    }
+
+    /// Handler for: `eth_getAccountInfo`
+    async fn get_raw_account_info(
         &self,
         address: Address,
         block: BlockId,

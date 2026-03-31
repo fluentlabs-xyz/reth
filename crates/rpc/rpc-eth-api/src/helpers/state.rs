@@ -139,7 +139,7 @@ pub trait EthState: LoadState + SpawnBlocking {
     }
 
     /// Returns the account at the given address for the provided block identifier.
-    fn get_account(
+    fn get_raw_account(
         &self,
         address: Address,
         block_id: BlockId,
@@ -175,8 +175,66 @@ pub trait EthState: LoadState + SpawnBlocking {
         })
     }
 
+    /// Returns the account at the given address for the provided block identifier.
+    fn get_account(
+        &self,
+        address: Address,
+        block_id: BlockId,
+    ) -> impl Future<Output = Result<Option<Account>, Self::Error>> + Send {
+        self.spawn_blocking_io_fut(move |this| async move {
+            let state = this.state_at_block_id(block_id).await?;
+            let account = state.basic_account(&address).map_err(Self::Error::from_eth_err)?;
+            let Some(account) = account else { return Ok(None) };
+
+            // Check whether the distance to the block exceeds the maximum configured proof window.
+            let chain_info = this.provider().chain_info().map_err(Self::Error::from_eth_err)?;
+            let block_number = this
+                .provider()
+                .block_number_for_id(block_id)
+                .map_err(Self::Error::from_eth_err)?
+                .ok_or(EthApiError::HeaderNotFound(block_id))?;
+            let max_window = this.max_proof_window();
+            if chain_info.best_number.saturating_sub(block_number) > max_window {
+                return Err(EthApiError::ExceedsMaxProofWindow.into())
+            }
+
+            let balance = account.balance;
+            let nonce = account.nonce;
+            let mut code_hash = account.bytecode_hash.unwrap_or(KECCAK_EMPTY);
+
+            if code_hash != KECCAK_EMPTY {
+                let bytecode = state
+                    .account_code(&address)
+                    .map_err(Self::Error::from_eth_err)?
+                    .unwrap_or_default();
+                use fluentbase_evm::EthereumMetadata;
+                match &bytecode.0 {
+                    // Only this very runtime + owner gets «stripped» code
+                    reth_revm::bytecode::Bytecode::OwnableAccount(acc)
+                    if acc.owner_address == fluentbase_types::PRECOMPILE_EVM_RUNTIME =>
+                        {
+                            code_hash = EthereumMetadata::read_from_bytes(&acc.metadata)
+                                .as_ref()
+                                .map(EthereumMetadata::code_hash)
+                                .unwrap_or(KECCAK_EMPTY);
+                        }
+                    // Everything else – return as-is
+                    _ => {},
+                }
+            }
+
+            // Provide a default `HashedStorage` value in order to
+            // get the storage root hash of the current state.
+            let storage_root = state
+                .storage_root(address, Default::default())
+                .map_err(Self::Error::from_eth_err)?;
+
+            Ok(Some(Account { balance, nonce, code_hash, storage_root }))
+        })
+    }
+
     /// Retrieves the account's balance, nonce, and code for a given address.
-    fn get_account_info(
+    fn get_raw_account_info(
         &self,
         address: Address,
         block_id: BlockId,
@@ -198,6 +256,49 @@ pub trait EthState: LoadState + SpawnBlocking {
                     .map_err(Self::Error::from_eth_err)?
                     .unwrap_or_default()
                     .original_bytes()
+            };
+
+            Ok(AccountInfo { balance, nonce, code })
+        })
+    }
+
+    /// Retrieves the account's balance, nonce, and code for a given address.
+    fn get_account_info(
+        &self,
+        address: Address,
+        block_id: BlockId,
+    ) -> impl Future<Output = Result<AccountInfo, Self::Error>> + Send {
+        self.spawn_blocking_io_fut(move |this| async move {
+            let state = this.state_at_block_id(block_id).await?;
+            let account = state
+                .basic_account(&address)
+                .map_err(Self::Error::from_eth_err)?
+                .unwrap_or_default();
+
+            let balance = account.balance;
+            let nonce = account.nonce;
+            let code = if account.get_bytecode_hash() != KECCAK_EMPTY {
+                let bytecode = state
+                    .account_code(&address)
+                    .map_err(Self::Error::from_eth_err)?
+                    .unwrap_or_default();
+                use fluentbase_evm::EthereumMetadata;
+                match &bytecode.0 {
+                    // Only this very runtime + owner gets «stripped» code
+                    reth_revm::bytecode::Bytecode::OwnableAccount(acc)
+                    if acc.owner_address == fluentbase_types::PRECOMPILE_EVM_RUNTIME =>
+                        {
+                            let evm_bytecode = EthereumMetadata::read_from_bytes(&acc.metadata)
+                                .as_ref()
+                                .map(EthereumMetadata::code_copy)
+                                .unwrap_or_default();
+                            evm_bytecode
+                        }
+                    // Everything else – return as-is
+                    _ => bytecode.original_bytes(),
+                }
+            } else {
+                Default::default()
             };
 
             Ok(AccountInfo { balance, nonce, code })
@@ -410,6 +511,7 @@ pub trait LoadState:
                 .map_err(Self::Error::from_eth_err)?
                 .unwrap_or_default();
             use fluentbase_evm::EthereumMetadata;
+            // Note: Don't forget to patch `eth_getAccountInfo`
             match &bytecode.0 {
                 // Only this very runtime + owner gets «stripped» code
                 reth_revm::bytecode::Bytecode::OwnableAccount(acc)

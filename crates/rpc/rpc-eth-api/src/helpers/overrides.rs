@@ -43,7 +43,7 @@ where
         info.nonce = nonce;
     }
     if let Some(code) = account_override.code {
-        info.code = try_override_evm_bytecode(&mut info, Bytecode::new_raw_checked(code)?);
+        try_override_evm_bytecode::<DB>(&mut info, Bytecode::new_raw_checked(code)?)?;
     }
     if let Some(balance) = account_override.balance {
         info.balance = balance;
@@ -100,11 +100,14 @@ where
     Ok(())
 }
 
-fn try_override_evm_bytecode(
+fn try_override_evm_bytecode<DB>(
     account_info: &mut AccountInfo,
     evm_bytecode: Bytecode,
-) -> Option<Bytecode> {
-    let bytecode = match evm_bytecode {
+) -> Result<(), StateOverrideError<DB::Error>>
+where
+    DB: Database + DatabaseCommit,
+{
+    account_info.code = match evm_bytecode {
         Bytecode::Eip7702(eip7702_bytecode) => Some(Bytecode::Eip7702(eip7702_bytecode)),
         // For EVM bytecode we should wrap it into a bytecode that is owned by EVM
         // runtime
@@ -122,10 +125,17 @@ fn try_override_evm_bytecode(
         // rWasm is a trusted code, letting pass invalid bytecode without validation can cause
         // memory out of bounds or UB, ownable accounts can only be controlled by deployer, this can
         // be allowed once fully covered with tests and doesn't cause any side effects
-        Bytecode::Rwasm(_) | Bytecode::OwnableAccount(_) => None,
-    }?;
-    account_info.code_hash = bytecode.hash_slow();
-    Some(bytecode)
+        Bytecode::Rwasm(_) | Bytecode::OwnableAccount(_) => {
+            use reth_revm::bytecode::{
+                ownable_account::OwnableAccountDecodeError, BytecodeDecodeError,
+            };
+            return Err(StateOverrideError::InvalidBytecode(BytecodeDecodeError::OwnableAccount(
+                OwnableAccountDecodeError::UnsupportedVersion,
+            )));
+        }
+    };
+    account_info.code_hash = account_info.code.as_ref().unwrap().hash_slow();
+    Ok(())
 }
 
 #[cfg(test)]
