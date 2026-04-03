@@ -946,7 +946,7 @@ where
         block: BlockId,
     ) -> RpcResult<alloy_rpc_types_eth::AccountInfo> {
         trace!(target: "rpc::eth", "Serving eth_getAccountInfo");
-        Ok(EthState::get_account_info(self, address, block).await?)
+        Ok(EthState::get_raw_account_info(self, address, block).await?)
     }
 
     /// Handler for: `eth_getBlockAccessListByBlockHash`
