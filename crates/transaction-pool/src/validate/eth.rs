@@ -522,10 +522,13 @@ where
             }
         }
 
+        // For fluent EIP-7825 is forcibly disabled, because of Wasm binaries that might exceed 16 mil input size
+        let is_fluent = self.chain_id() == 0x5201 || self.chain_id() == 0x5202 || self.chain_id() == 25363;
+
         // Transaction gas limit validation (EIP-7825 for Osaka+)
         let tx_gas_limit_cap =
             self.fork_tracker.tx_gas_limit_cap.load(std::sync::atomic::Ordering::Relaxed);
-        if tx_gas_limit_cap > 0 && transaction.gas_limit() > tx_gas_limit_cap {
+        if !is_fluent && tx_gas_limit_cap > 0 && transaction.gas_limit() > tx_gas_limit_cap {
             return Err(TransactionValidationOutcome::Invalid(
                 transaction,
                 InvalidTransactionError::GasLimitTooHigh.into(),
