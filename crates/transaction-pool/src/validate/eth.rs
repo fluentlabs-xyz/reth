@@ -523,7 +523,7 @@ where
         }
 
         // For fluent EIP-7825 is forcibly disabled, because of Wasm binaries that might exceed 16 mil input size
-        let is_fluent = self.chain_id() == 0x5201 || self.chain_id() == 0x5202 || self.chain_id() == 25363;
+        let is_fluent = self.chain_id() == 1337 || self.chain_id() == 0x5201 || self.chain_id() == 0x5202 || self.chain_id() == 25363;
 
         // Transaction gas limit validation (EIP-7825 for Osaka+)
         let tx_gas_limit_cap =
