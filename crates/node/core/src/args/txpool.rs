@@ -2,7 +2,7 @@
 
 use crate::cli::config::RethTransactionPoolConfig;
 use alloy_eips::eip1559::{ETHEREUM_BLOCK_GAS_LIMIT_30M, MIN_PROTOCOL_BASE_FEE};
-use alloy_primitives::Address;
+use alloy_primitives::{map::AddressSet, Address};
 use clap::{builder::Resettable, Args};
 use reth_cli_util::{parse_duration_from_secs_or_ms, parsers::format_duration_as_secs_or_ms};
 use reth_transaction_pool::{
@@ -19,6 +19,66 @@ use std::{path::PathBuf, sync::OnceLock, time::Duration};
 
 /// Global static transaction pool defaults
 static TXPOOL_DEFAULTS: OnceLock<DefaultTxPoolValues> = OnceLock::new();
+
+fn parse_txpool_disallow_file(path: &str) -> Result<AddressSet, String> {
+    let entries = match reth_cli_util::parsers::read_json_from_file::<Vec<String>>(path) {
+        Ok(values) => values,
+        Err(_) => {
+            let raw = std::fs::read_to_string(path).map_err(|error| {
+                format!("failed to read txpool disallow file `{path}`: {error}")
+            })?;
+            raw.split(|ch: char| ch.is_whitespace() || ch == ',')
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        }
+    };
+
+    let mut disallow = AddressSet::default();
+    let mut invalid = Vec::new();
+
+    for value in entries {
+        let token =
+            value.trim().trim_matches(|ch| matches!(ch, '"' | '\'' | '[' | ']' | '{' | '}' | ';'));
+        if token.is_empty() {
+            continue;
+        }
+
+        if !token.starts_with("0x") && !token.starts_with("0X") {
+            continue;
+        }
+
+        let normalized = if let Some(value) = token.strip_prefix("0X") {
+            format!("0x{value}")
+        } else {
+            token.to_string()
+        };
+
+        match normalized.parse::<Address>() {
+            Ok(address) => {
+                disallow.insert(address);
+            }
+            Err(_) => invalid.push(normalized),
+        }
+    }
+
+    if !invalid.is_empty() {
+        let shown = invalid.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+        let suffix = if invalid.len() > 5 {
+            format!(" (and {} more)", invalid.len() - 5)
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "invalid EVM addresses in txpool disallow file `{path}`: {shown}{suffix}"
+        ));
+    }
+
+    if disallow.is_empty() {
+        return Err(format!("txpool disallow file `{path}` contains no EVM addresses"));
+    }
+
+    Ok(disallow)
+}
 
 /// Default values for transaction pool that can be customized
 ///
@@ -46,6 +106,7 @@ pub struct DefaultTxPoolValues {
     max_cached_entries: u32,
     no_locals: bool,
     locals: Vec<Address>,
+    disallow: Option<AddressSet>,
     no_local_transactions_propagation: bool,
     additional_validation_tasks: usize,
     pending_tx_listener_buffer_size: usize,
@@ -194,6 +255,12 @@ impl DefaultTxPoolValues {
         self
     }
 
+    /// Set the default transaction disallow set.
+    pub fn with_disallow(mut self, v: Option<AddressSet>) -> Self {
+        self.disallow = v;
+        self
+    }
+
     /// Set whether to disable local transaction propagation by default
     pub const fn with_no_local_transactions_propagation(mut self, v: bool) -> Self {
         self.no_local_transactions_propagation = v;
@@ -273,6 +340,7 @@ impl Default for DefaultTxPoolValues {
             max_cached_entries: DEFAULT_MAX_CACHED_BLOBS,
             no_locals: false,
             locals: Vec::new(),
+            disallow: None,
             no_local_transactions_propagation: false,
             additional_validation_tasks: DEFAULT_TXPOOL_ADDITIONAL_VALIDATION_TASKS,
             pending_tx_listener_buffer_size: PENDING_TX_LISTENER_BUFFER_SIZE,
@@ -370,6 +438,22 @@ pub struct TxPoolArgs {
     /// Flag to allow certain addresses as local.
     #[arg(long = "txpool.locals", default_values = DefaultTxPoolValues::get_global().locals.iter().map(ToString::to_string))]
     pub locals: Vec<Address>,
+
+    /// Path to txpool disallow list.
+    ///
+    /// Supported file formats:
+    /// - JSON array of address strings: `["0x...", "0x..."]`
+    /// - Plain text with mixed tokens (newline/space/comma separated); non-EVM entries are ignored
+    ///
+    /// Only valid EVM addresses are loaded and denied by policy.
+    #[arg(
+        long = "txpool.disallow",
+        value_name = "PATH",
+        value_parser = parse_txpool_disallow_file,
+        default_value = Resettable::from(DefaultTxPoolValues::get_global().disallow.as_ref().map(|v| format!("{:?}", v).into()))
+    )]
+    pub disallow: Option<AddressSet>,
+
     /// Flag to toggle local transaction propagation.
     #[arg(long = "txpool.no-local-transactions-propagation", default_value_t = DefaultTxPoolValues::get_global().no_local_transactions_propagation)]
     pub no_local_transactions_propagation: bool,
@@ -455,6 +539,7 @@ impl Default for TxPoolArgs {
             max_cached_entries,
             no_locals,
             locals,
+            disallow,
             no_local_transactions_propagation,
             additional_validation_tasks,
             pending_tx_listener_buffer_size,
@@ -487,6 +572,7 @@ impl Default for TxPoolArgs {
             max_cached_entries,
             no_locals,
             locals,
+            disallow,
             no_local_transactions_propagation,
             additional_validation_tasks,
             pending_tx_listener_buffer_size,
@@ -616,6 +702,7 @@ mod tests {
                 address!("0x0000000000000000000000000000000000000001"),
                 address!("0x0000000000000000000000000000000000000002"),
             ],
+            disallow: None,
             no_local_transactions_propagation: true,
             additional_validation_tasks: 4,
             pending_tx_listener_buffer_size: 512,
@@ -689,5 +776,36 @@ mod tests {
         .args;
 
         assert_eq!(parsed_args, args);
+    }
+
+    #[test]
+    fn parse_txpool_disallow_file_accepts_mixed_plain_text() {
+        let path =
+            std::env::temp_dir().join(format!("reth-txpool-disallow-{}.txt", std::process::id()));
+        std::fs::write(
+            &path,
+            "TA3941uFAvmVibSkQ6fMJXxmaSNovX86mz\n0x00000000000000000000000000000000000000aa\n0x00000000000000000000000000000000000000bb",
+        )
+        .unwrap();
+
+        let parsed = parse_txpool_disallow_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed.contains(&address!("0x00000000000000000000000000000000000000aa")));
+        assert!(parsed.contains(&address!("0x00000000000000000000000000000000000000bb")));
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn parse_txpool_disallow_file_rejects_invalid_evm_addresses() {
+        let path = std::env::temp_dir()
+            .join(format!("reth-txpool-disallow-invalid-{}.txt", std::process::id()));
+        std::fs::write(&path, "0x1234\n0x00000000000000000000000000000000000000aa").unwrap();
+
+        let result = parse_txpool_disallow_file(path.to_str().unwrap());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid EVM addresses"));
+
+        std::fs::remove_file(path).unwrap();
     }
 }

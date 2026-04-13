@@ -463,8 +463,8 @@ where
     ) -> eyre::Result<Self::Pool> {
         let pool_config = ctx.pool_config();
 
-        let blobs_disabled = ctx.config().txpool.disable_blobs_support ||
-            ctx.config().txpool.blobpool_max_count == 0;
+        let blobs_disabled = ctx.config().txpool.disable_blobs_support
+            || ctx.config().txpool.blobpool_max_count == 0;
 
         let blob_cache_size = if let Some(blob_cache_size) = pool_config.blob_cache_size {
             Some(blob_cache_size)
@@ -486,12 +486,18 @@ where
         let blob_store =
             reth_node_builder::components::create_blob_store_with_cache(ctx, blob_cache_size)?;
 
+        let txpool_disallow = ctx.config().txpool.disallow.clone().unwrap_or_default();
+        if !txpool_disallow.is_empty() {
+            info!(target: "reth::cli", count = txpool_disallow.len(), "Loaded txpool disallow policy addresses");
+        }
+
         let validator =
             TransactionValidationTaskExecutor::eth_builder(ctx.provider().clone(), evm_config)
                 .set_eip4844(!blobs_disabled)
                 .kzg_settings(ctx.kzg_settings()?)
                 .with_max_tx_input_bytes(ctx.config().txpool.max_tx_input_bytes)
                 .with_local_transactions_config(pool_config.local_transactions_config.clone())
+                .with_disallow(txpool_disallow)
                 .set_tx_fee_cap(ctx.config().rpc.rpc_tx_fee_cap)
                 .with_max_tx_gas_limit(ctx.config().txpool.max_tx_gas_limit)
                 .with_minimum_priority_fee(ctx.config().txpool.minimum_priority_fee)
