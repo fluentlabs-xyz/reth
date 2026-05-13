@@ -224,6 +224,14 @@ pub trait EthApi<
     #[method(name = "getCode")]
     async fn get_code(&self, address: Address, block_number: Option<BlockId>) -> RpcResult<Bytes>;
 
+    /// Returns raw code at a given address at given block number.
+    #[method(name = "getRawCode")]
+    async fn get_raw_code(
+        &self,
+        address: Address,
+        block_number: Option<BlockId>,
+    ) -> RpcResult<Bytes>;
+
     /// Returns the block's header at given number.
     #[method(name = "getHeaderByNumber")]
     async fn header_by_number(&self, hash: BlockNumberOrTag) -> RpcResult<Option<H>>;
@@ -304,6 +312,14 @@ pub trait EthApi<
     /// Returns the account details by specifying an address and a block number/tag
     #[method(name = "getAccount")]
     async fn get_account(
+        &self,
+        address: Address,
+        block: BlockId,
+    ) -> RpcResult<Option<alloy_rpc_types_eth::Account>>;
+
+    /// Returns the account details by specifying an address and a block number/tag
+    #[method(name = "getRawAccount")]
+    async fn get_raw_account(
         &self,
         address: Address,
         block: BlockId,
@@ -401,6 +417,16 @@ pub trait EthApi<
     /// This is similar to `eth_getAccount` but does not return the storage root.
     #[method(name = "getAccountInfo")]
     async fn get_account_info(
+        &self,
+        address: Address,
+        block: BlockId,
+    ) -> RpcResult<alloy_rpc_types_eth::AccountInfo>;
+
+    /// Returns the account's balance, nonce, and code.
+    ///
+    /// This is similar to `eth_getRawAccount` but does not return the storage root.
+    #[method(name = "getRawAccountInfo")]
+    async fn get_raw_account_info(
         &self,
         address: Address,
         block: BlockId,
@@ -692,6 +718,16 @@ where
         Ok(EthState::get_code(self, address, block_number).await?)
     }
 
+    /// Handler for: `eth_getRawCode`
+    async fn get_raw_code(
+        &self,
+        address: Address,
+        block_number: Option<BlockId>,
+    ) -> RpcResult<Bytes> {
+        trace!(target: "rpc::eth", ?address, ?block_number, "Serving eth_getCode");
+        Ok(EthState::get_raw_code(self, address, block_number).await?)
+    }
+
     /// Handler for: `eth_getHeaderByNumber`
     async fn header_by_number(
         &self,
@@ -798,6 +834,16 @@ where
     ) -> RpcResult<Option<alloy_rpc_types_eth::Account>> {
         trace!(target: "rpc::eth", "Serving eth_getAccount");
         Ok(EthState::get_account(self, address, block).await?)
+    }
+
+    /// Handler for: `eth_getRawAccount`
+    async fn get_raw_account(
+        &self,
+        address: Address,
+        block: BlockId,
+    ) -> RpcResult<Option<alloy_rpc_types_eth::Account>> {
+        trace!(target: "rpc::eth", "Serving eth_getAccount");
+        Ok(EthState::get_raw_account(self, address, block).await?)
     }
 
     /// Handler for: `eth_maxPriorityFeePerGas`
@@ -916,6 +962,16 @@ where
     ) -> RpcResult<alloy_rpc_types_eth::AccountInfo> {
         trace!(target: "rpc::eth", "Serving eth_getAccountInfo");
         Ok(EthState::get_account_info(self, address, block).await?)
+    }
+
+    /// Handler for: `eth_getAccountInfo`
+    async fn get_raw_account_info(
+        &self,
+        address: Address,
+        block: BlockId,
+    ) -> RpcResult<alloy_rpc_types_eth::AccountInfo> {
+        trace!(target: "rpc::eth", "Serving eth_getAccountInfo");
+        Ok(EthState::get_raw_account_info(self, address, block).await?)
     }
 
     /// Handler for: `eth_getBlockAccessListByBlockHash`

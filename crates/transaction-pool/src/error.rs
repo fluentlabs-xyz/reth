@@ -293,6 +293,10 @@ pub enum InvalidPoolTransactionError {
         /// Minimum required priority fee.
         minimum_priority_fee: u128,
     },
+    /// The transaction is specified to use less gas than required to start the
+    /// invocation.
+    #[error("tx not allowed")]
+    NotAllowed,
 }
 
 // === impl InvalidPoolTransactionError ===
@@ -412,6 +416,7 @@ impl InvalidPoolTransactionError {
                 Eip7702PoolTransactionError::AuthorityReserved => false,
             },
             Self::PriorityFeeBelowMinimum { .. } => false,
+            Self::NotAllowed => false,
         }
     }
 

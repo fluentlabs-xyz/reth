@@ -28,6 +28,7 @@ pub mod spec;
 pub mod state;
 pub mod trace;
 pub mod transaction;
+mod overrides;
 
 pub use bal::GetBlockAccessList;
 pub use block::{EthBlocks, LoadBlock};

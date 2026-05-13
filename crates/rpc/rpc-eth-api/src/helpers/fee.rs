@@ -257,6 +257,19 @@ pub trait EthFees:
                 );
             };
 
+            // Floor reward percentiles at the configured GPO `ignore_price`
+            // so quiet/empty blocks don't surface as zero rewards. Without
+            // this, EIP-1559 estimators built on `eth_feeHistory` (e.g.
+            // alloy's `eip1559_default_estimator`) collapse to a 1-wei tip
+            // when the last N blocks happen to be empty on low-traffic
+            // chains, and the resulting tx is rejected by fluent's
+            // `--txpool.minimal-protocol-fee`.
+            if let Some(min_reward) =
+                self.gas_oracle().config().ignore_price.filter(|p| !p.is_zero())
+            {
+                apply_min_reward_floor(&mut rewards, min_reward.saturating_to::<u128>());
+            }
+
             Ok(FeeHistory {
                 base_fee_per_gas,
                 gas_used_ratio,
@@ -406,5 +419,53 @@ where
         Self: 'static,
     {
         async move { self.gas_oracle().suggest_tip_cap().await.map_err(Self::Error::from_eth_err) }
+    }
+}
+
+/// Raises every per-block reward percentile below `min` up to `min`.
+///
+/// Used by `fee_history` to keep `eth_feeHistory` rewards from collapsing to
+/// zero on quiet/empty blocks, which would otherwise drag EIP-1559 tip
+/// estimators to 1 wei.
+fn apply_min_reward_floor(rewards: &mut [Vec<u128>], min: u128) {
+    for r in rewards.iter_mut().flatten() {
+        *r = (*r).max(min);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_min_reward_floor;
+
+    #[test]
+    fn floors_values_below_min() {
+        let mut rewards = vec![vec![0u128, 5, 100], vec![1, 50]];
+        apply_min_reward_floor(&mut rewards, 10);
+        assert_eq!(rewards, vec![vec![10u128, 10, 100], vec![10, 50]]);
+    }
+
+    #[test]
+    fn leaves_values_at_or_above_min_unchanged() {
+        let mut rewards = vec![vec![10u128, 11, u128::MAX]];
+        apply_min_reward_floor(&mut rewards, 10);
+        assert_eq!(rewards, vec![vec![10u128, 11, u128::MAX]]);
+    }
+
+    #[test]
+    fn no_op_on_empty_inputs() {
+        let mut empty_outer: Vec<Vec<u128>> = vec![];
+        apply_min_reward_floor(&mut empty_outer, 10);
+        assert!(empty_outer.is_empty());
+
+        let mut empty_inner: Vec<Vec<u128>> = vec![vec![], vec![]];
+        apply_min_reward_floor(&mut empty_inner, 10);
+        assert_eq!(empty_inner, vec![Vec::<u128>::new(), Vec::<u128>::new()]);
+    }
+
+    #[test]
+    fn zero_min_is_a_noop() {
+        let mut rewards = vec![vec![0u128, 1, 2]];
+        apply_min_reward_floor(&mut rewards, 0);
+        assert_eq!(rewards, vec![vec![0u128, 1, 2]]);
     }
 }

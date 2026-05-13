@@ -1097,6 +1097,7 @@ impl From<InvalidPoolTransactionError> for RpcPoolError {
                     minimum_priority_fee,
                 })
             }
+            InvalidPoolTransactionError::NotAllowed => Self::Other(err.into()),
         }
     }
 }

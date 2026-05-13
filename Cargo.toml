@@ -442,10 +442,14 @@ revm-interpreter = { version = "35.0.0", default-features = false }
 revm-database-interface = { version = "11.0.0", default-features = false }
 revm-inspectors = "0.39.0"
 
+# fluentbase
+fluentbase-types = { git = "https://github.com/fluentlabs-xyz/fluentbase", branch = "devel", default-features = false }
+fluentbase-evm = { git = "https://github.com/fluentlabs-xyz/fluentbase", branch = "devel", default-features = false, features = ["std"] }
+
 # eth
 alloy-dyn-abi = "1.5.6"
 alloy-primitives = { version = "1.5.6", default-features = false, features = ["map-foldhash"] }
-alloy-sol-types = { version = "1.5.6", default-features = false }
+alloy-sol-types = { version = "1.5.6", default-features = false, features = ["json"] }
 
 alloy-chains = { version = "0.2.33", default-features = false }
 alloy-eip2124 = { version = "0.2.0", default-features = false }
@@ -700,3 +704,16 @@ vergen-git2 = "9.1.0"
 
 # networking
 ipnet = "2.11"
+
+[patch.crates-io]
+revm = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v107-patched" }
+revm-bytecode = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v107-patched" }
+revm-database = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v107-patched" }
+revm-state = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v107-patched" }
+revm-primitives = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v107-patched" }
+revm-interpreter = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v107-patched" }
+revm-inspector = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v107-patched" }
+revm-context = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v107-patched" }
+revm-context-interface = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v107-patched" }
+revm-database-interface = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v107-patched" }
+op-revm = { git = "https://github.com/fluentlabs-xyz/revm-rwasm.git", branch = "v107-patched" }

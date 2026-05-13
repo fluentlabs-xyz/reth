@@ -202,6 +202,11 @@ where
     )
     .await
     .unwrap();
+    EthApiClient::<TransactionRequest, Transaction, Block, Receipt, Header, TransactionSigned>::get_raw_code(
+        client, address, None,
+    )
+    .await
+    .unwrap();
     EthApiClient::<TransactionRequest, Transaction, Block, Receipt, Header, TransactionSigned>::send_raw_transaction(
         client, tx,
     )
