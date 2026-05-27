@@ -8,6 +8,8 @@ ignore = [
     "RUSTSEC-2024-0384",
     # https://rustsec.org/advisories/RUSTSEC-2024-0436 paste! is unmaintained
     "RUSTSEC-2024-0436",
+    # https://rustsec.org/advisories/RUSTSEC-2024-0370 proc-macro-error is pulled by temporary Fluentbase dependency
+    "RUSTSEC-2024-0370",
     # https://rustsec.org/advisories/RUSTSEC-2025-0141 bincode is unmaintained, need to transition all deps to wincode first
     "RUSTSEC-2025-0141",
     # https://rustsec.org/advisories/RUSTSEC-2023-0089 atomic-polyfill is unmaintained, transitive dep via test-fuzz
@@ -95,4 +97,7 @@ allow-git = [
     "https://github.com/paradigmxyz/jsonrpsee",
     "https://github.com/DaniPopes/slotmap.git",
     "https://github.com/sigp/discv5",
+    # Temporary FLU-27 dependency branches.
+    "https://github.com/hedwig0x/fluentbase",
+    "https://github.com/hedwig0x/revm-rwasm.git",
 ]
