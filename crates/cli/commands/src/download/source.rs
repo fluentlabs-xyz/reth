@@ -3,7 +3,6 @@ use eyre::{Result, WrapErr};
 use reqwest::Client;
 use reth_fs_util as fs;
 use std::path::{Path, PathBuf};
-use tracing::info;
 use url::Url;
 
 /// An entry from the snapshot discovery API listing.
@@ -28,39 +27,6 @@ impl SnapshotApiEntry {
     fn is_modular(&self) -> bool {
         self.metadata_url.ends_with("manifest.json")
     }
-}
-
-/// Discovers the latest snapshot manifest URL for the given chain from the snapshots API.
-///
-/// Queries the configured snapshot API and returns the manifest URL for the most
-/// recent modular snapshot matching the requested chain.
-pub(crate) async fn discover_manifest_url(chain_id: u64) -> Result<String> {
-    let defaults = DownloadDefaults::get_global();
-    let api_url = &*defaults.snapshot_api_url;
-
-    info!(target: "reth::cli", %api_url, %chain_id, "Discovering latest snapshot manifest");
-
-    let entries = fetch_snapshot_api_entries(chain_id).await?;
-    let entry =
-        entries.iter().filter(|s| s.is_modular()).max_by_key(|s| s.block).ok_or_else(|| {
-            eyre::eyre!(
-                "No modular snapshot manifest found for chain \
-             {chain_id} at {api_url}\n\n\
-             You can provide a manifest URL directly with --manifest-url, or\n\
-             use a direct snapshot URL with -u from:\n\
-             \t- {}\n\n\
-             Use --list to see all available snapshots.",
-                api_url.trim_end_matches("/api/snapshots"),
-            )
-        })?;
-
-    info!(target: "reth::cli",
-        block = entry.block,
-        url = %entry.metadata_url,
-        "Found latest snapshot manifest"
-    );
-
-    Ok(entry.metadata_url.clone())
 }
 
 /// Deserializes a JSON value that may be either a number or a string-encoded number.

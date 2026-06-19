@@ -99,7 +99,8 @@ use eyre::Result;
 use manifest::{ComponentSelection, SnapshotComponentType, SnapshotManifest};
 use planning::{collect_planned_archives, summarize_download_startup};
 use progress::{DownloadProgress, DownloadRequestLimiter};
-use reth_chainspec::{EthChainSpec, EthereumHardfork, EthereumHardforks, MAINNET};
+use reqwest::Client;
+use reth_chainspec::{EthChainSpec, EthereumHardfork, EthereumHardforks};
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_util::cancellation::CancellationToken;
 use reth_db::{init_db, Database};
@@ -108,8 +109,8 @@ use reth_fs_util as fs;
 use reth_node_core::args::DefaultPruningValues;
 use reth_prune_types::PruneMode;
 use source::{
-    discover_manifest_url, fetch_manifest_from_source, fetch_snapshot_api_entries,
-    print_snapshot_listing, resolve_manifest_base_url,
+    fetch_manifest_from_source, fetch_snapshot_api_entries, print_snapshot_listing,
+    resolve_manifest_base_url,
 };
 use std::{
     borrow::Cow,
@@ -417,8 +418,15 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> DownloadCo
             return Ok(());
         }
 
+        let latest_url =
+            if self.url.is_none() && self.manifest_url.is_none() && self.manifest_path.is_none() {
+                Some(get_latest_snapshot_url(chain_id).await?)
+            } else {
+                None
+            };
+
         // Legacy single-URL mode: download one archive and extract it
-        if let Some(ref url) = self.url {
+        if let Some(url) = self.url.as_ref().or(latest_url.as_ref()) {
             let request_limiter = DownloadRequestLimiter::new(self.download_concurrency.max(1));
             info!(target: "reth::cli",
                 dir = ?data_dir.data_dir(),
@@ -750,24 +758,31 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> DownloadCo
 
         match &self.manifest_url {
             Some(url) => Ok(url.clone()),
-            None => {
-                let defaults = DownloadDefaults::get_global();
-                if defaults.mainnet_only_discovery() && chain_id != MAINNET.chain.id() {
-                    eyre::bail!(
-                        "Snapshots are only auto-discovered for Ethereum mainnet.\n\n\
-                         Chain {chain_id} requires an explicit source:\n\
-                         \t--manifest-url <URL>\n\
-                         \t--manifest-path <PATH>\n\
-                         \t-u <SNAPSHOT-URL>\n\n\
-                         Use --list to inspect snapshots exposed by {}.",
-                        defaults.snapshot_api_url.trim_end_matches("/api/snapshots"),
-                    );
-                }
-
-                discover_manifest_url(chain_id).await
-            }
+            None => Ok(format!("{}/manifest.json", get_base_url(chain_id))),
         }
     }
+}
+
+async fn get_latest_snapshot_url(chain_id: u64) -> Result<String> {
+    let base_url = get_base_url(chain_id);
+    let filename = Client::new()
+        .get(format!("{base_url}/latest.txt"))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+
+    Ok(format!("{base_url}/{}", filename.trim()))
+}
+
+fn get_base_url(chain_id: u64) -> String {
+    let defaults = DownloadDefaults::get_global();
+    defaults
+        .default_chain_aware_base_url
+        .as_ref()
+        .map(|url| format!("{url}/{chain_id}"))
+        .unwrap_or_else(|| defaults.default_base_url.to_string())
 }
 
 /// Resolves explicit `--with-*` / `--with-*-since` / `--with-*-distance` flags
