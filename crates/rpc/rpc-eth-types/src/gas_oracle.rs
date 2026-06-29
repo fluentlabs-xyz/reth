@@ -176,7 +176,7 @@ where
 
             if block_values.is_empty() {
                 // For empty blocks, use zero gas price to signal no demand
-                results.push(U256::ZERO);
+                results.push(self.oracle_config.ignore_price.unwrap_or(U256::ZERO));
             } else {
                 results.extend(block_values);
                 populated_blocks += 1;
