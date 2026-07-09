@@ -1,7 +1,6 @@
 //! Transaction pool arguments
 
 use crate::cli::config::RethTransactionPoolConfig;
-use alloy_eips::eip1559::{ETHEREUM_BLOCK_GAS_LIMIT_30M, MIN_PROTOCOL_BASE_FEE};
 use alloy_primitives::{map::AddressSet, Address};
 use clap::{builder::Resettable, Args};
 use reth_cli_util::{parse_duration_from_secs_or_ms, parsers::format_duration_as_secs_or_ms};
@@ -19,6 +18,10 @@ use std::{path::PathBuf, sync::OnceLock, time::Duration};
 
 /// Global static transaction pool defaults
 static TXPOOL_DEFAULTS: OnceLock<DefaultTxPoolValues> = OnceLock::new();
+
+const DEFAULT_MINIMAL_PROTOCOL_BASEFEE: u64 = 1_000_000;
+const DEFAULT_MINIMUM_PRIORITY_FEE: u128 = 0;
+const DEFAULT_ENFORCED_GAS_LIMIT: u64 = 50_000_000;
 
 fn parse_txpool_disallow_file(path: &str) -> Result<AddressSet, String> {
     let entries = match reth_cli_util::parsers::read_json_from_file::<Vec<String>>(path) {
@@ -331,9 +334,9 @@ impl Default for DefaultTxPoolValues {
             disable_blobs_support: false,
             max_account_slots: TXPOOL_MAX_ACCOUNT_SLOTS_PER_SENDER,
             price_bump: DEFAULT_PRICE_BUMP,
-            minimal_protocol_basefee: MIN_PROTOCOL_BASE_FEE,
-            minimum_priority_fee: None,
-            enforced_gas_limit: ETHEREUM_BLOCK_GAS_LIMIT_30M,
+            minimal_protocol_basefee: DEFAULT_MINIMAL_PROTOCOL_BASEFEE,
+            minimum_priority_fee: Some(DEFAULT_MINIMUM_PRIORITY_FEE),
+            enforced_gas_limit: DEFAULT_ENFORCED_GAS_LIMIT,
             max_tx_gas_limit: None,
             blob_transaction_price_bump: REPLACE_BLOB_PRICE_BUMP,
             max_tx_input_bytes: DEFAULT_MAX_TX_INPUT_BYTES,
@@ -499,16 +502,16 @@ pub struct TxPoolArgs {
 
 impl TxPoolArgs {
     /// Sets the minimal protocol base fee to 0, effectively disabling checks that enforce that a
-    /// transaction's fee must be higher than the [`MIN_PROTOCOL_BASE_FEE`] which is the lowest
-    /// value the ethereum EIP-1559 base fee can reach.
+    /// transaction's fee must be higher than the [`DEFAULT_MINIMAL_PROTOCOL_BASEFEE`] which is the
+    /// lowest value the ethereum EIP-1559 base fee can reach.
     pub const fn with_disabled_protocol_base_fee(self) -> Self {
         self.with_protocol_base_fee(0)
     }
 
     /// Configures the minimal protocol base fee that should be enforced.
     ///
-    /// Ethereum's EIP-1559 base fee can't drop below [`MIN_PROTOCOL_BASE_FEE`] hence this is
-    /// enforced by default in the pool.
+    /// Ethereum's EIP-1559 base fee can't drop below [`DEFAULT_MINIMAL_PROTOCOL_BASEFEE`] hence
+    /// this is enforced by default in the pool.
     pub const fn with_protocol_base_fee(mut self, protocol_base_fee: u64) -> Self {
         self.minimal_protocol_basefee = protocol_base_fee;
         self
@@ -653,6 +656,9 @@ mod tests {
         let default_args = TxPoolArgs::default();
         let args = CommandParser::<TxPoolArgs>::parse_from(["reth"]).args;
         assert_eq!(args, default_args);
+        assert_eq!(args.minimal_protocol_basefee, DEFAULT_MINIMAL_PROTOCOL_BASEFEE);
+        assert_eq!(args.minimum_priority_fee, Some(DEFAULT_MINIMUM_PRIORITY_FEE));
+        assert_eq!(args.enforced_gas_limit, DEFAULT_ENFORCED_GAS_LIMIT);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use clap::Args;
 use reth_rpc_eth_types::GasPriceOracleConfig;
 use reth_rpc_server_types::constants::gas_oracle::{
     DEFAULT_GAS_PRICE_BLOCKS, DEFAULT_GAS_PRICE_PERCENTILE, DEFAULT_IGNORE_GAS_PRICE,
-    DEFAULT_MAX_GAS_PRICE,
+    DEFAULT_MAX_GAS_PRICE, DEFAULT_SUGGESTED_GAS_PRICE,
 };
 
 /// Parameters to configure Gas Price Oracle
@@ -27,7 +27,7 @@ pub struct GasPriceOracleArgs {
     pub percentile: u32,
 
     /// The default gas price to use if there are no blocks to use
-    #[arg(long = "gpo.default-suggested-fee")]
+    #[arg(long = "gpo.default-suggested-fee", default_value = "1000000")]
     pub default_suggested_fee: Option<U256>,
 }
 
@@ -53,7 +53,7 @@ impl Default for GasPriceOracleArgs {
             ignore_price: DEFAULT_IGNORE_GAS_PRICE.to(),
             max_price: DEFAULT_MAX_GAS_PRICE.to(),
             percentile: DEFAULT_GAS_PRICE_PERCENTILE,
-            default_suggested_fee: None,
+            default_suggested_fee: Some(DEFAULT_SUGGESTED_GAS_PRICE),
         }
     }
 }
@@ -79,7 +79,7 @@ mod tests {
                 ignore_price: DEFAULT_IGNORE_GAS_PRICE.to(),
                 max_price: DEFAULT_MAX_GAS_PRICE.to(),
                 percentile: DEFAULT_GAS_PRICE_PERCENTILE,
-                default_suggested_fee: None,
+                default_suggested_fee: Some(DEFAULT_SUGGESTED_GAS_PRICE),
             }
         );
     }

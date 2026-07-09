@@ -21,6 +21,7 @@ pub mod call;
 pub mod config;
 pub mod estimate;
 pub mod fee;
+mod overrides;
 pub mod pending_block;
 pub mod receipt;
 pub mod signer;
@@ -28,7 +29,6 @@ pub mod spec;
 pub mod state;
 pub mod trace;
 pub mod transaction;
-mod overrides;
 
 pub use bal::GetBlockAccessList;
 pub use block::{EthBlocks, LoadBlock};

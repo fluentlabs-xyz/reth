@@ -3,8 +3,10 @@
 
 use core::fmt;
 
-use super::overrides::{apply_block_overrides, apply_state_overrides, OverrideBlockHashes};
-use super::{LoadBlock, LoadPendingBlock, LoadState, LoadTransaction, SpawnBlocking, Trace};
+use super::{
+    overrides::{apply_block_overrides, apply_state_overrides, OverrideBlockHashes},
+    LoadBlock, LoadPendingBlock, LoadState, LoadTransaction, SpawnBlocking, Trace,
+};
 use crate::{
     helpers::estimate::EstimateCall, FromEvmError, FullEthApiTypes, RpcBlock, RpcNodeCore,
 };
@@ -637,19 +639,17 @@ pub trait Call:
                     if acc.owner_address == fluentbase_types::PRECOMPILE_EVM_RUNTIME =>
                 {
                     fluentbase_evm::EthereumMetadata::read_from_bytes(&acc.metadata)
-                        .and_then(|m| Some(m.code_copy()))
+                        .map(|m| m.code_copy())
                 }
                 _ => None,
             };
 
             use reth_revm::context::result::{ExecutionResult, Output};
-            if let Some(bytes) = runtime_code {
-                if let ExecutionResult::Success {
-                    output: Output::Create(ref mut out, ..), ..
-                } = res.result
-                {
-                    *out = bytes;
-                }
+            if let Some(bytes) = runtime_code &&
+                let ExecutionResult::Success { output: Output::Create(ref mut out, ..), .. } =
+                    res.result
+            {
+                *out = bytes;
             }
         }
     }
