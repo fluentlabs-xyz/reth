@@ -2,7 +2,7 @@ use crate::{cli::config::PayloadBuilderConfig, version::default_extra_data};
 use alloy_consensus::constants::MAXIMUM_EXTRA_DATA_SIZE;
 use alloy_primitives::Bytes;
 use clap::{
-    builder::{RangedU64ValueParser, TypedValueParser},
+    builder::{RangedU64ValueParser, Resettable, TypedValueParser},
     Arg, Args, Command,
 };
 use reth_cli_util::{
@@ -13,6 +13,9 @@ use std::{ffi::OsStr, sync::OnceLock, time::Duration};
 
 /// Global static payload builder defaults
 static PAYLOAD_BUILDER_DEFAULTS: OnceLock<DefaultPayloadBuilderValues> = OnceLock::new();
+
+/// Default target gas limit for built blocks.
+const DEFAULT_BUILDER_GAS_LIMIT: u64 = 50_000_000;
 
 /// Default values for payload builder that can be customized
 ///
@@ -25,6 +28,8 @@ pub struct DefaultPayloadBuilderValues {
     interval: String,
     /// Default deadline for payload builds in seconds
     deadline: String,
+    /// Default target gas limit for built blocks
+    gas_limit: Option<u64>,
     /// Default maximum number of concurrent payload building tasks
     max_payload_tasks: usize,
 }
@@ -63,6 +68,12 @@ impl DefaultPayloadBuilderValues {
         self.max_payload_tasks = v;
         self
     }
+
+    /// Set the default target gas limit for built blocks
+    pub const fn with_gas_limit(mut self, v: Option<u64>) -> Self {
+        self.gas_limit = v;
+        self
+    }
 }
 
 impl Default for DefaultPayloadBuilderValues {
@@ -71,6 +82,7 @@ impl Default for DefaultPayloadBuilderValues {
             extra_data: default_extra_data(),
             interval: "1".to_string(),
             deadline: "12".to_string(),
+            gas_limit: Some(DEFAULT_BUILDER_GAS_LIMIT),
             max_payload_tasks: 3,
         }
     }
@@ -92,7 +104,12 @@ pub struct PayloadBuilderArgs {
     pub extra_data: Bytes,
 
     /// Target gas limit for built blocks.
-    #[arg(long = "builder.gaslimit", alias = "miner.gaslimit", value_name = "GAS_LIMIT")]
+    #[arg(
+        long = "builder.gaslimit",
+        alias = "miner.gaslimit",
+        value_name = "GAS_LIMIT",
+        default_value = Resettable::from(DefaultPayloadBuilderValues::get_global().gas_limit.map(|v| v.to_string().into()))
+    )]
     pub gas_limit: Option<u64>,
 
     /// The interval at which the job should build a new payload after the last.
@@ -136,7 +153,7 @@ impl Default for PayloadBuilderArgs {
         Self {
             extra_data: Bytes::from(defaults.extra_data.as_bytes().to_vec()),
             interval: parse_duration_from_secs_or_ms(defaults.interval.as_str()).unwrap(),
-            gas_limit: None,
+            gas_limit: defaults.gas_limit,
             deadline: Duration::from_secs(defaults.deadline.parse().unwrap()),
             max_payload_tasks: defaults.max_payload_tasks,
             max_blobs_per_block: None,
@@ -203,7 +220,7 @@ impl TypedValueParser for ExtraDataValueParser {
                 format!(
                     "Payload builder extradata size exceeds {MAXIMUM_EXTRA_DATA_SIZE}-byte limit"
                 ),
-            ))
+            ));
         }
 
         Ok(bytes.into())
@@ -311,6 +328,17 @@ mod tests {
         let default_args = PayloadBuilderArgs::default();
         let args = CommandParser::<PayloadBuilderArgs>::parse_from(["reth"]).args;
         assert_eq!(args, default_args);
+    }
+
+    #[test]
+    fn payload_builder_args_use_requested_gas_limit_default_and_allow_override() {
+        let args = CommandParser::<PayloadBuilderArgs>::parse_from(["reth"]).args;
+        assert_eq!(args.gas_limit, Some(DEFAULT_BUILDER_GAS_LIMIT));
+
+        let args =
+            CommandParser::<PayloadBuilderArgs>::parse_from(["reth", "--builder.gaslimit", "42"])
+                .args;
+        assert_eq!(args.gas_limit, Some(42));
     }
 
     #[test]

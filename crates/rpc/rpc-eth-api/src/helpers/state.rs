@@ -18,9 +18,9 @@ use reth_rpc_eth_types::{
     EthApiError, PendingBlockEnv, RpcInvalidTransactionError, SignError,
 };
 use reth_rpc_server_types::constants::DEFAULT_MAX_STORAGE_VALUES_SLOTS;
-use reth_storage_api::BlockNumReader;
 use reth_storage_api::{
-    BlockIdReader, BlockReaderIdExt, StateProvider, StateProviderBox, StateProviderFactory,
+    BlockIdReader, BlockNumReader, BlockReaderIdExt, StateProvider, StateProviderBox,
+    StateProviderFactory,
 };
 use reth_transaction_pool::TransactionPool;
 use std::collections::HashMap;
@@ -386,8 +386,8 @@ pub trait LoadState:
         Self: SpawnBlocking,
     {
         async move {
-            if at.is_pending()
-                && let Ok(Some(state)) = self.local_pending_state().await
+            if at.is_pending() &&
+                let Ok(Some(state)) = self.local_pending_state().await
             {
                 return Ok(state);
             }

@@ -533,7 +533,7 @@ Gas Price Oracle:
       --gpo.ignoreprice <IGNORE_PRICE>
           Gas Price below which gpo will ignore transactions
 
-          [default: 0]
+          [default: 1000000]
 
       --gpo.maxprice <MAX_PRICE>
           Maximum transaction priority fee(or gasprice before London Fork) to be recommended by gpo
@@ -547,6 +547,8 @@ Gas Price Oracle:
 
       --gpo.default-suggested-fee <DEFAULT_SUGGESTED_FEE>
           The default gas price to use if there are no blocks to use
+
+          [default: 1000000]
 
       --rpc.send-raw-transaction-sync-timeout <SECONDS>
           Timeout for `send_raw_transaction_sync` RPC method
@@ -623,15 +625,17 @@ TxPool:
       --txpool.minimal-protocol-fee <MINIMAL_PROTOCOL_BASEFEE>
           Minimum base fee required by the protocol
 
-          [default: 7]
+          [default: 1000000]
 
       --txpool.minimum-priority-fee <MINIMUM_PRIORITY_FEE>
           Minimum priority fee required for transaction acceptance into the pool. Transactions with priority fee below this value will be rejected
 
+          [default: 0]
+
       --txpool.gas-limit <ENFORCED_GAS_LIMIT>
           The default enforced gas limit for transactions entering the pool
 
-          [default: 30000000]
+          [default: 50000000]
 
       --txpool.max-tx-gas <MAX_TX_GAS_LIMIT>
           Maximum gas limit for individual transactions. Transactions exceeding this limit will be rejected by the transaction pool
@@ -706,6 +710,8 @@ Builder:
 
       --builder.gaslimit <GAS_LIMIT>
           Target gas limit for built blocks
+
+          [default: 50000000]
 
       --builder.interval <DURATION>
           The interval at which the job should build a new payload after the last.

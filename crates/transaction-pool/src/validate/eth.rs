@@ -357,8 +357,8 @@ where
             }));
         }
 
-        if let TxKind::Call(to) = transaction.kind()
-            && self.disallow.contains(&to)
+        if let TxKind::Call(to) = transaction.kind() &&
+            self.disallow.contains(&to)
         {
             return Err(InvalidPoolTransactionError::other(DisallowedAddressPolicyError {
                 address: to,
@@ -368,8 +368,8 @@ where
 
         if let Some(authorizations) = transaction.authorization_list() {
             for authorization in authorizations {
-                if let Ok(authority) = authorization.recover_authority()
-                    && self.disallow.contains(&authority)
+                if let Ok(authority) = authorization.recover_authority() &&
+                    self.disallow.contains(&authority)
                 {
                     return Err(InvalidPoolTransactionError::other(DisallowedAddressPolicyError {
                         address: authority,
@@ -534,9 +534,8 @@ where
         if self.fork_tracker.is_shanghai_activated() {
             let max_initcode_size =
                 self.fork_tracker.max_initcode_size.load(std::sync::atomic::Ordering::Relaxed);
-            let max_init_code_size =
-                revm_primitives::wasm::wasm_max_code_size(transaction.input())
-                    .unwrap_or(max_initcode_size);
+            let max_init_code_size = revm_primitives::wasm::wasm_max_code_size(transaction.input())
+                .unwrap_or(max_initcode_size);
             transaction.ensure_max_init_code_size(max_init_code_size)?
         }
 
@@ -644,8 +643,12 @@ where
             }
         }
 
-        // For fluent EIP-7825 is forcibly disabled, because of Wasm binaries that might exceed 16 mil input size
-        let is_fluent = self.chain_id() == 1337 || self.chain_id() == 0x5201 || self.chain_id() == 0x5202 || self.chain_id() == 25363;
+        // For fluent EIP-7825 is forcibly disabled, because of Wasm binaries that might exceed 16
+        // mil input size
+        let is_fluent = self.chain_id() == 1337 ||
+            self.chain_id() == 0x5201 ||
+            self.chain_id() == 0x5202 ||
+            self.chain_id() == 25363;
 
         // Transaction gas limit validation (EIP-7825 for Osaka+)
         let tx_gas_limit_cap =

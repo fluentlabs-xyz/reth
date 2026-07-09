@@ -1,8 +1,7 @@
 //! Estimate gas needed implementation
 
-use super::{Call, LoadPendingBlock};
+use super::{overrides::apply_state_overrides, Call, LoadPendingBlock};
 use crate::{AsEthApiError, FromEthApiError, IntoEthApiError};
-use super::overrides::{apply_state_overrides};
 use alloy_network::TransactionBuilder;
 use alloy_primitives::{TxKind, U256};
 use alloy_rpc_types_eth::{state::StateOverride, BlockId};
