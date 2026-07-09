@@ -1,7 +1,6 @@
 //! Transaction pool arguments
 
 use crate::cli::config::RethTransactionPoolConfig;
-use alloy_eips::eip1559::{ETHEREUM_BLOCK_GAS_LIMIT_30M, MIN_PROTOCOL_BASE_FEE};
 use alloy_primitives::{map::AddressSet, Address};
 use clap::{builder::Resettable, Args};
 use reth_cli_util::{parse_duration_from_secs_or_ms, parsers::format_duration_as_secs_or_ms};
@@ -19,6 +18,13 @@ use std::{path::PathBuf, sync::OnceLock, time::Duration};
 
 /// Global static transaction pool defaults
 static TXPOOL_DEFAULTS: OnceLock<DefaultTxPoolValues> = OnceLock::new();
+
+/// Default minimum protocol base fee required by the transaction pool.
+const DEFAULT_MIN_PROTOCOL_BASE_FEE: u64 = 1_000_000;
+/// Default minimum priority fee required for transaction pool acceptance.
+const DEFAULT_MIN_PRIORITY_FEE: u128 = 0;
+/// Default enforced gas limit for transactions entering the pool.
+const DEFAULT_TXPOOL_GAS_LIMIT: u64 = 50_000_000;
 
 fn parse_txpool_disallow_file(path: &str) -> Result<AddressSet, String> {
     let entries = match reth_cli_util::parsers::read_json_from_file::<Vec<String>>(path) {
@@ -331,9 +337,9 @@ impl Default for DefaultTxPoolValues {
             disable_blobs_support: false,
             max_account_slots: TXPOOL_MAX_ACCOUNT_SLOTS_PER_SENDER,
             price_bump: DEFAULT_PRICE_BUMP,
-            minimal_protocol_basefee: MIN_PROTOCOL_BASE_FEE,
-            minimum_priority_fee: None,
-            enforced_gas_limit: ETHEREUM_BLOCK_GAS_LIMIT_30M,
+            minimal_protocol_basefee: DEFAULT_MIN_PROTOCOL_BASE_FEE,
+            minimum_priority_fee: Some(DEFAULT_MIN_PRIORITY_FEE),
+            enforced_gas_limit: DEFAULT_TXPOOL_GAS_LIMIT,
             max_tx_gas_limit: None,
             blob_transaction_price_bump: REPLACE_BLOB_PRICE_BUMP,
             max_tx_input_bytes: DEFAULT_MAX_TX_INPUT_BYTES,
@@ -653,6 +659,14 @@ mod tests {
         let default_args = TxPoolArgs::default();
         let args = CommandParser::<TxPoolArgs>::parse_from(["reth"]).args;
         assert_eq!(args, default_args);
+    }
+
+    #[test]
+    fn txpool_args_use_requested_defaults() {
+        let args = CommandParser::<TxPoolArgs>::parse_from(["reth"]).args;
+        assert_eq!(args.minimal_protocol_basefee, DEFAULT_MIN_PROTOCOL_BASE_FEE);
+        assert_eq!(args.minimum_priority_fee, Some(DEFAULT_MIN_PRIORITY_FEE));
+        assert_eq!(args.enforced_gas_limit, DEFAULT_TXPOOL_GAS_LIMIT);
     }
 
     #[test]
