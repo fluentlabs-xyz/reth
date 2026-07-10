@@ -11,8 +11,7 @@ pub(crate) use alloy_evm::overrides::{
 };
 use fluentbase_evm::{AnalyzedBytecode, EthereumMetadata};
 use fluentbase_types::PRECOMPILE_EVM_RUNTIME;
-use revm::bytecode::ownable_account::OwnableAccountBytecode;
-use revm::state::AccountInfo;
+use revm::{bytecode::ownable_account::OwnableAccountBytecode, state::AccountInfo};
 
 /// Applies the given state overrides (a set of [`AccountOverride`]) to the database.
 pub(crate) fn apply_state_overrides<DB>(
