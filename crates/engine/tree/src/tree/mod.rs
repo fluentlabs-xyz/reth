@@ -1550,8 +1550,25 @@ where
                 match request {
                     EngineApiRequest::InsertExecutedBlock(block) => {
                         let block_num_hash = block.recovered_block().num_hash();
-                        if block_num_hash.number <= self.state.tree_state.canonical_block_number() {
-                            // outdated block that can be skipped
+                        // Skip only blocks that are already KNOWN — present in the
+                        // in-memory tree or persisted to the DB. A height-only
+                        // `number <= canonical_block_number()` check would also drop a
+                        // SAME-HEIGHT SIBLING of the current canonical block, which an
+                        // external consensus (Fluent DPoS deferred execution) legitimately
+                        // imports to reorg onto a finalized fork of a speculatively
+                        // executed block; silently dropping it leaves the follow-up
+                        // FCU permanently SYNCING on the unknown head hash and forks
+                        // the node at the consensus layer (soak3 fork @ height 9924).
+                        let already_known = self
+                            .state
+                            .tree_state
+                            .contains_hash(&block_num_hash.hash) ||
+                            (block_num_hash.number <=
+                                self.persistence_state.last_persisted_block.number &&
+                                self.provider
+                                    .sealed_header_by_hash(block_num_hash.hash)
+                                    .is_ok_and(|header| header.is_some()));
+                        if already_known {
                             return Ok(ops::ControlFlow::Continue(()))
                         }
 
