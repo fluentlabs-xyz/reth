@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{ops::Range, path::PathBuf};
 use thiserror::Error;
 
 /// Errors associated with [`crate::NippyJar`].
@@ -63,6 +63,15 @@ pub enum NippyJarError {
     OffsetOutOfBounds {
         /// The index of the offset that was being read.
         index: usize,
+    },
+
+    /// An attempt was made to read a data range that is inverted or out of bounds.
+    #[error("attempted to read an inconsistent data range {range:?}, data size: {len}")]
+    InconsistentData {
+        /// The requested data range.
+        range: Range<usize>,
+        /// The total size of the data file.
+        len: usize,
     },
 
     /// The output buffer is too small for the compression or decompression operation.

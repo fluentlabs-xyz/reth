@@ -96,9 +96,9 @@ impl<'a, H: NippyJarHeader> NippyJarCursor<'a, H> {
             row.into_iter()
                 .map(|v| match v {
                     ValueRange::Mmap(range) => self.reader.data(range),
-                    ValueRange::Internal(range) => &self.internal_buffer[range],
+                    ValueRange::Internal(range) => Ok(&self.internal_buffer[range]),
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
         ))
     }
 
@@ -137,9 +137,9 @@ impl<'a, H: NippyJarHeader> NippyJarCursor<'a, H> {
             row.into_iter()
                 .map(|v| match v {
                     ValueRange::Mmap(range) => self.reader.data(range),
-                    ValueRange::Internal(range) => &self.internal_buffer[range],
+                    ValueRange::Internal(range) => Ok(&self.internal_buffer[range]),
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, _>>()?,
         ))
     }
 
@@ -174,7 +174,7 @@ impl<'a, H: NippyJarHeader> NippyJarCursor<'a, H> {
                         .expect("dictionary to be loaded");
                     let mut decompressor = Decompressor::with_prepared_dictionary(dictionaries)?;
                     Zstd::decompress_with_dictionary(
-                        self.reader.data(column_offset_range),
+                        self.reader.data(column_offset_range)?,
                         &mut self.internal_buffer,
                         &mut decompressor,
                     )?;
@@ -182,7 +182,7 @@ impl<'a, H: NippyJarHeader> NippyJarCursor<'a, H> {
                 _ => {
                     // Uses the chosen default decompressor
                     compression.decompress_to(
-                        self.reader.data(column_offset_range),
+                        self.reader.data(column_offset_range)?,
                         &mut self.internal_buffer,
                     )?;
                 }

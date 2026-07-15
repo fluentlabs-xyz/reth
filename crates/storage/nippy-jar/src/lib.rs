@@ -425,8 +425,15 @@ impl DataReader {
     }
 
     /// Returns the underlying data as a slice of bytes for the provided range.
-    pub fn data(&self, range: Range<usize>) -> &[u8] {
-        &self.data_mmap[range]
+    ///
+    /// Returns [`NippyJarError::InconsistentData`] if the range is inverted or out of bounds,
+    /// which can be observed when a concurrent writer leaves the offsets file momentarily
+    /// inconsistent with the data file.
+    pub fn data(&self, range: Range<usize>) -> Result<&[u8], NippyJarError> {
+        let len = self.data_mmap.len();
+        self.data_mmap
+            .get(range.clone())
+            .ok_or(NippyJarError::InconsistentData { range, len })
     }
 
     /// Returns total size of data file.
@@ -813,6 +820,41 @@ mod tests {
 
         // Simulate an unexpected shutdown during commit, and see that it unwinds successfully
         test_append_consistency_partial_commit(file_path.path(), &col1, &col2);
+    }
+
+    #[test]
+    fn test_data_reader_inconsistent_range() {
+        let (col1, col2) = test_data(None);
+        let num_columns = 2;
+        let file_path = tempfile::NamedTempFile::new().unwrap();
+
+        append_two_rows(num_columns, file_path.path(), &col1, &col2);
+
+        let nippy = NippyJar::load_without_header(file_path.path()).unwrap();
+        let reader = nippy.open_data_reader().unwrap();
+        let size = reader.size();
+        assert!(size > 0);
+
+        // Valid range still reads.
+        assert_eq!(reader.data(0..size).unwrap().len(), size);
+
+        // Inverted range (torn offset index read as e.g. `163572..0`) must error, not panic.
+        assert!(matches!(
+            reader.data(size..0),
+            Err(NippyJarError::InconsistentData { range, len }) if range == (size..0) && len == size
+        ));
+
+        // End past the data file must error, not panic.
+        assert!(matches!(
+            reader.data(0..size + 1),
+            Err(NippyJarError::InconsistentData { range, len }) if range == (0..size + 1) && len == size
+        ));
+
+        // Fully out-of-bounds range must error, not panic.
+        assert!(matches!(
+            reader.data(size + 1..size + 2),
+            Err(NippyJarError::InconsistentData { .. })
+        ));
     }
 
     #[test]
