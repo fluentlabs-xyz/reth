@@ -43,12 +43,17 @@ impl<'a> StaticFileCursor<'a> {
                     if offset > n {
                         return Ok(None)
                     }
+                    // Propagate jar-cursor errors (e.g. `NippyJarError::InconsistentData` from a
+                    // torn read of a segment being concurrently appended) instead of collapsing
+                    // them into `Ok(None)`: a silently skipped row would corrupt derived state,
+                    // while an error lets the caller retry. A legitimately absent row (row index
+                    // past the committed row count) is still `Ok(None)`.
                     self.row_by_number_with_cols((n - offset) as usize, mask)
+                        .map_err(ProviderError::other)?
                 }
-                None => Ok(None),
+                None => None,
             },
-        }
-        .map_or(None, |v| v);
+        };
 
         Ok(row)
     }
@@ -115,5 +120,63 @@ impl<'a> From<&'a B256> for KeyOrNumber<'a> {
 impl From<u64> for KeyOrNumber<'_> {
     fn from(value: u64) -> Self {
         KeyOrNumber::Number(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::static_file::AccountChangesetMask;
+    use reth_db_api::models::AccountBeforeTx;
+    use reth_nippy_jar::NippyJarWriter;
+    use reth_static_file_types::{SegmentRangeInclusive, StaticFileSegment};
+
+    /// A jar-cursor error (e.g. `NippyJarError::InconsistentData` from a torn read of a segment
+    /// being concurrently appended) must propagate out of `get_one` as `Err`, not be swallowed
+    /// into `Ok(None)`: a silently skipped changeset row would corrupt derived state roots.
+    #[test]
+    fn get_one_propagates_jar_cursor_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("static_file_account-change-sets_0_0");
+
+        let header = SegmentHeader::new(
+            SegmentRangeInclusive::new(0, 0),
+            Some(SegmentRangeInclusive::new(0, 0)),
+            None,
+            StaticFileSegment::AccountChangeSets,
+        );
+
+        // Two single-column rows, each a valid minimal `AccountBeforeTx` (bare 20-byte address).
+        let row = [0u8; 20];
+        {
+            let jar = NippyJar::new(1, &path, header);
+            let mut writer = NippyJarWriter::new(jar).unwrap();
+            writer.append_column(Some(Ok(&row[..]))).unwrap();
+            writer.append_column(Some(Ok(&row[..]))).unwrap();
+            writer.commit().unwrap();
+        }
+
+        // Sanity: a well-formed jar reads the row back.
+        {
+            let jar = NippyJar::<SegmentHeader>::load(&path).unwrap();
+            let reader = Arc::new(jar.open_data_reader().unwrap());
+            let mut cursor = StaticFileCursor::new(&jar, reader).unwrap();
+            let value = cursor.get_one::<AccountChangesetMask>(0.into()).unwrap();
+            assert_eq!(value, Some(AccountBeforeTx::default()));
+        }
+
+        // Truncate the data file below the committed offsets (the on-disk analog of a torn
+        // offsets-vs-data read). Reading row 0 now yields an out-of-bounds data range.
+        std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(1).unwrap();
+
+        let jar = NippyJar::<SegmentHeader>::load(&path).unwrap();
+        let reader = Arc::new(jar.open_data_reader().unwrap());
+        let mut cursor = StaticFileCursor::new(&jar, reader).unwrap();
+
+        let result = cursor.get_one::<AccountChangesetMask>(0.into());
+        assert!(
+            matches!(result, Err(ProviderError::Other(_))),
+            "expected the jar-cursor error to propagate, got {result:?}"
+        );
     }
 }
