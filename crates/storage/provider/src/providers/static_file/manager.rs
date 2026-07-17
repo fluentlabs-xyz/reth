@@ -30,7 +30,7 @@ use reth_db_api::{
     transaction::DbTx,
 };
 use reth_ethereum_primitives::{Receipt, TransactionSigned};
-use reth_nippy_jar::{NippyJar, NippyJarChecker, NippyJarError};
+use reth_nippy_jar::{NippyJar, NippyJarChecker};
 use reth_node_types::NodePrimitives;
 use reth_primitives_traits::{
     dashmap::DashMap, AlloyBlockHeader as _, BlockBody as _, RecoveredBlock, SealedHeader,
@@ -52,10 +52,7 @@ use std::{
     fmt::Debug,
     ops::{Bound, Deref, Range, RangeBounds, RangeInclusive},
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering as AtomicOrdering},
-        mpsc, Arc,
-    },
+    sync::{atomic::AtomicU64, mpsc, Arc},
 };
 use tracing::{debug, info, info_span, instrument, trace, warn};
 
@@ -291,14 +288,17 @@ pub struct StaticFileProviderInner<N> {
     path: PathBuf,
     /// Maintains a writer set of [`StaticFileSegment`].
     writers: StaticFileWriters<N>,
-    /// Lock-free registry of the file each segment's active writer currently owns, encoded as
-    /// `fixed_range.end() + 1` (`0` = no active writer).
+    /// Registry of the fixed block range of the file each segment's active writer currently owns
+    /// (`None` = no active writer).
     ///
-    /// Readers consult this on a cache miss to avoid self-loading (mmapping) a file that a writer
-    /// may be mid-append on. Combined with publish-on-open (every active file always holds a
-    /// committed snapshot in [`Self::map`]), a miss can only be a genuinely writer-idle file.
-    /// Interior mutability only — the map itself is populated once at construction.
-    active_writers: StaticFileMap<AtomicU64>,
+    /// Two consumers: the cache-miss path consults it to detect (and warn about) a self-load of a
+    /// file a writer may be mid-append on, and [`Self::initialize_index`] uses it to republish
+    /// committed snapshots for active files after clearing [`Self::map`] — without that
+    /// republish, a reader miss on the active file between an index re-initialization and the
+    /// writer's next commit would find no committed snapshot to serve. Interior mutability only —
+    /// the outer map itself is populated once at construction; per-segment locks are uncontended
+    /// (written on writer open/rotate/drop, read on cache miss / re-init).
+    active_writers: StaticFileMap<RwLock<Option<SegmentRangeInclusive>>>,
     /// Metrics for the static files.
     metrics: Option<Arc<StaticFileProviderMetrics>>,
     /// Access rights of the provider.
@@ -324,7 +324,7 @@ impl<N: NodePrimitives> StaticFileProviderInner<N> {
         let mut active_writers = StaticFileMap::default();
         for segment in StaticFileSegment::iter() {
             blocks_per_file.insert(segment, DEFAULT_BLOCKS_PER_STATIC_FILE);
-            active_writers.insert(segment, AtomicU64::new(0));
+            active_writers.insert(segment, RwLock::new(None));
         }
 
         let provider = Self {
@@ -419,33 +419,32 @@ impl<N: NodePrimitives> StaticFileProviderInner<N> {
 }
 
 impl<N> StaticFileProviderInner<N> {
-    /// Records that `segment`'s active writer now owns the file ending at `range_end` (the
-    /// publish-on-open ownership signal). Lock-free interior mutation.
+    /// Records that `segment`'s active writer now owns the file spanning `range` (the
+    /// publish-on-open ownership signal).
     pub(crate) fn mark_active_writer_file(
         &self,
         segment: StaticFileSegment,
-        range_end: BlockNumber,
+        range: SegmentRangeInclusive,
     ) {
         if let Some(slot) = self.active_writers.get(segment) {
-            slot.store(range_end.saturating_add(1), AtomicOrdering::Release);
+            *slot.write() = Some(range);
         }
     }
 
     /// Clears `segment`'s active-writer registry entry (writer released / dropped).
     pub(crate) fn clear_active_writer_file(&self, segment: StaticFileSegment) {
         if let Some(slot) = self.active_writers.get(segment) {
-            slot.store(0, AtomicOrdering::Release);
+            *slot.write() = None;
         }
     }
 
-    /// Returns the fixed-range end of the file `segment`'s active writer currently owns, or
+    /// Returns the fixed block range of the file `segment`'s active writer currently owns, or
     /// `None` if no writer is active on the segment.
-    pub(crate) fn active_writer_file_end(
+    pub(crate) fn active_writer_file_range(
         &self,
         segment: StaticFileSegment,
-    ) -> Option<BlockNumber> {
-        let raw = self.active_writers.get(segment)?.load(AtomicOrdering::Acquire);
-        (raw != 0).then(|| raw - 1)
+    ) -> Option<SegmentRangeInclusive> {
+        *self.active_writers.get(segment)?.read()
     }
 }
 
@@ -1014,28 +1013,24 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         } else {
             trace!(target: "providers::static_file", ?segment, ?fixed_block_range, "Creating jar from scratch");
 
-            // Self-load is only safe for writer-idle files. If a writer is active on the
-            // requested file, its committed snapshot is normally already in the cache
-            // (publish-on-open); reaching the miss path here means we would otherwise mmap a
-            // file the writer may be mid-append on. Refuse and surface a retryable error rather
-            // than poisoning the shared map with a torn view.
-            //
-            // This state is runtime-reachable (not an invariant violation): `initialize_index()`
-            // clears the map — e.g. via `delete_jar`/`delete_segment` outside a writer's commit —
-            // while the segment's writer stays registered, so the next miss on the active file
-            // legitimately lands here until the writer's next publish repopulates the cache.
-            if self.active_writer_file_end(segment) == Some(fixed_block_range.end()) {
+            // A miss on the ACTIVE writer file should normally be impossible (publish-on-open /
+            // publish-on-commit / republish-on-reinit keep a committed snapshot cached), but it
+            // is runtime-reachable if some path clears the cache without republishing. Warn for
+            // telemetry and fall through to the self-load below: `LoadedJar::new`'s load-time
+            // validation belt guarantees the captured snapshot is committed-consistent (reads
+            // clamp to the config's committed `rows`; the durable commit order data -> offsets ->
+            // config means any config observed is already covered by on-disk offsets) or degrades
+            // to a typed retryable error — never a torn view, and never a permanent refusal that
+            // would wedge the engine read path.
+            if self.active_writer_file_range(segment).map(|r| r.end()) ==
+                Some(fixed_block_range.end())
+            {
                 warn!(
                     target: "providers::static_file",
                     ?segment,
                     ?fixed_block_range,
-                    "Cache miss on the active writer file; refusing self-load of a live file"
+                    "Cache miss on the active writer file; serving a validated self-load"
                 );
-                return Err(ProviderError::other(NippyJarError::InconsistentSnapshot {
-                    reason: format!(
-                        "self-load of active writer file refused for {segment:?} {fixed_block_range:?}"
-                    ),
-                }));
             }
 
             let path = self.path.join(segment.filename(fixed_block_range));
@@ -1258,9 +1253,9 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
         segment: StaticFileSegment,
         fixed_range: SegmentRangeInclusive,
     ) -> ProviderResult<()> {
-        // Record ownership first so a concurrent reader that misses the cache during the load
-        // below is steered away from self-loading the live file (it errors and retries instead).
-        self.mark_active_writer_file(segment, fixed_range.end());
+        // Record ownership first: a concurrent reader that misses the cache during the load below
+        // then knows it is racing an active writer (warn + validated self-load).
+        self.mark_active_writer_file(segment, fixed_range);
 
         let path = self.path.join(segment.filename(&fixed_range));
         let jar = NippyJar::<SegmentHeader>::load(&path).map_err(ProviderError::other)?;
@@ -1319,6 +1314,31 @@ impl<N: NodePrimitives> StaticFileProvider<N> {
 
         // If this is a re-initialization, we need to clear this as well
         self.map.clear();
+
+        // Re-initialization must not break the committed-snapshot invariant for files with an
+        // ACTIVE writer: clearing the map while a writer stays registered would leave the next
+        // reader miss on the active file with nothing published until the writer's next commit —
+        // which on the engine path may never come precisely BECAUSE reads fail (genesis
+        // bring-up wedge). Republish a committed snapshot for every registered active file.
+        for segment in StaticFileSegment::iter() {
+            if let Some(fixed_range) = self.active_writer_file_range(segment) {
+                let path = self.path.join(segment.filename(&fixed_range));
+                if !path.exists() {
+                    // The active file may have been legitimately deleted (e.g. `delete_segment`
+                    // triggers this re-init mid-deletion); nothing to republish.
+                    continue;
+                }
+                let jar =
+                    NippyJar::<SegmentHeader>::load(&path).map_err(ProviderError::other)?;
+                self.map.insert((fixed_range.end(), segment), LoadedJar::new(jar)?);
+                debug!(
+                    target: "providers::static_file",
+                    ?segment,
+                    ?fixed_range,
+                    "Republished active writer snapshot after index re-initialization"
+                );
+            }
+        }
 
         // initialize the expired history height to the lowest static file block
         if let Some(lowest_range) =

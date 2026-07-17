@@ -1702,4 +1702,53 @@ mod tests {
         assert!(sf_rw.header_by_number(3).unwrap().is_some(), "rotated-past file readable");
         assert!(sf_rw.header_by_number(6).unwrap().is_none(), "uncommitted rotated tail invisible");
     }
+
+    /// Regression: genesis bring-up wedge (soak 2026-07-17). `initialize_index()` clears the
+    /// jar cache while the genesis Headers writer stays registered; the next FCU-style reader
+    /// lookup of block 0 then misses on the ACTIVE file. This must serve the committed snapshot
+    /// (via republish-on-reinit / validated self-load) — never an `InconsistentSnapshot` refuse,
+    /// which wedged the engine permanently (reads failing is exactly what prevented the next
+    /// commit from republishing).
+    #[test]
+    fn test_initialize_index_preserves_active_writer_reads() {
+        let (static_dir, _) = create_test_static_files_dir();
+        let sf_rw: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_write(&static_dir).build().unwrap();
+
+        // init_genesis analog: writer created (stays registered), genesis header committed.
+        {
+            let mut w = sf_rw.latest_writer(StaticFileSegment::Headers).unwrap();
+            let header = Header { number: 0, ..Default::default() };
+            w.append_header(&header, &BlockHash::default()).unwrap();
+            w.commit().unwrap();
+        }
+
+        // Launch-time re-initialization (reachable via delete_jar / prune / ro-sync) clears the
+        // jar cache while the Headers writer is still registered.
+        sf_rw.initialize_index().unwrap();
+
+        // FCU-style lookups of the genesis block must succeed.
+        assert_eq!(
+            sf_rw.header_by_number(0).expect("no snapshot error").map(|h| h.number),
+            Some(0),
+            "genesis header readable after re-init with active writer"
+        );
+
+        // And the chain must be able to advance: append + commit + read.
+        {
+            let mut w = sf_rw.latest_writer(StaticFileSegment::Headers).unwrap();
+            for num in 1..=3u64 {
+                let header = Header { number: num, ..Default::default() };
+                w.append_header(&header, &BlockHash::default()).unwrap();
+            }
+            w.commit().unwrap();
+        }
+        for num in 0..=3u64 {
+            assert_eq!(
+                sf_rw.header_by_number(num).unwrap().map(|h| h.number),
+                Some(num),
+                "block {num} readable, chain advanced past re-init"
+            );
+        }
+    }
 }

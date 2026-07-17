@@ -347,12 +347,11 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
         }
 
         // Claim ownership of this file in the active-writer registry immediately, before any
-        // (crash-recovery) healing runs. A reader that misses the cache while we heal is then
-        // steered away from self-loading the live file (it gets a retryable error instead of a
-        // torn view). The committed snapshot itself is published into the cache by the caller
-        // once the file is fully consistent (`StaticFileProviderRW::new` after healing, or
-        // `increment_block` after rotation).
-        static_file_provider.mark_active_writer_file(segment, block_range.end());
+        // (crash-recovery) healing runs, so concurrent cache misses on it are detected and
+        // `initialize_index` re-runs know which file to republish. The committed snapshot itself
+        // is published into the cache by the caller once the file is fully consistent
+        // (`StaticFileProviderRW::new` after healing, or `increment_block` after rotation).
+        static_file_provider.mark_active_writer_file(segment, block_range);
 
         Ok(result)
     }
