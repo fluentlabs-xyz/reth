@@ -241,6 +241,17 @@ pub struct StaticFileProviderRW<N> {
     current_changeset_offset: Option<ChangesetOffset>,
 }
 
+impl<N> Drop for StaticFileProviderRW<N> {
+    fn drop(&mut self) {
+        // Clear the active-writer registry entry so subsequent reads of this segment's files may
+        // self-load again (the files are now writer-idle). If the parent provider is already
+        // gone, there is nothing to clear.
+        if let Some(provider) = self.reader.upgrade() {
+            provider.clear_active_writer_file(self.writer.user_header().segment());
+        }
+    }
+}
+
 impl<N: NodePrimitives> StaticFileProviderRW<N> {
     /// Creates a new [`StaticFileProviderRW`] for a [`StaticFileSegment`].
     ///
@@ -276,7 +287,22 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
             writer.heal_changeset_sidecar()?;
         }
 
+        // Publish-on-open: only now that the file is fully consistent (rows healed, sidecar
+        // healed) do we refresh the manager indexes and place a committed snapshot into the
+        // shared cache. Doing this last keeps the load-time validation belt from tripping on the
+        // transient mid-heal state, and guarantees the active file — including a fresh rows=0
+        // one that `update_index` alone would not cache — is always readable without a self-load.
+        writer.update_index()?;
+        let fixed_range = writer.writer_fixed_range();
+        writer.reader().publish_writer_snapshot(segment, fixed_range)?;
+
         Ok(writer)
+    }
+
+    /// Returns the fixed block range of the file this writer currently owns.
+    fn writer_fixed_range(&self) -> SegmentRangeInclusive {
+        let segment = self.writer.user_header().segment();
+        self.reader().find_fixed_range(segment, self.writer.user_header().expected_block_start())
     }
 
     fn open(
@@ -290,20 +316,17 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
         let static_file_provider = Self::upgrade_provider_to_strong_reference(&reader);
 
         let block_range = static_file_provider.find_fixed_range(segment, block);
-        let (jar, path) = match static_file_provider.get_segment_provider_for_block(
-            segment,
-            block_range.start(),
-            None,
-        ) {
-            Ok(provider) => (
-                NippyJar::load(provider.data_path()).map_err(ProviderError::other)?,
-                provider.data_path().into(),
-            ),
-            Err(ProviderError::MissingStaticFileBlock(_, _)) => {
-                let path = static_file_provider.directory().join(segment.filename(&block_range));
-                (create_jar(segment, &path, block_range), path)
-            }
-            Err(err) => return Err(err),
+        let path = static_file_provider.directory().join(segment.filename(&block_range));
+
+        // Resolve the writer's file straight from disk rather than through the reader cache. The
+        // file the writer is about to open may still be mid-heal (crash recovery), and routing it
+        // through `get_segment_provider_for_block` would self-load and validation-check that
+        // transient state, and poison the shared cache with a pre-heal snapshot. A committed,
+        // validated snapshot is published into the cache by `new`/`increment_block` afterwards.
+        let jar = if path.exists() {
+            NippyJar::load(&path).map_err(ProviderError::other)?
+        } else {
+            create_jar(segment, &path, block_range)
         };
 
         let result = match NippyJarWriter::new(jar) {
@@ -322,6 +345,14 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
                 Some(start.elapsed()),
             );
         }
+
+        // Claim ownership of this file in the active-writer registry immediately, before any
+        // (crash-recovery) healing runs. A reader that misses the cache while we heal is then
+        // steered away from self-loading the live file (it gets a retryable error instead of a
+        // torn view). The committed snapshot itself is published into the cache by the caller
+        // once the file is fully consistent (`StaticFileProviderRW::new` after healing, or
+        // `increment_block` after rotation).
+        static_file_provider.mark_active_writer_file(segment, block_range.end());
 
         Ok(result)
     }
@@ -357,8 +388,9 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
 
         self.writer.commit().map_err(ProviderError::other)?;
 
-        // Updates the [SnapshotProvider] manager
-        self.update_index()?;
+        // NOTE: the manager index/cache publish is deferred to the end of `new()` (after the
+        // changeset sidecar is also healed) so the load-time validation belt never observes the
+        // transient mid-heal state. See `StaticFileProviderRW::new`.
         Ok(())
     }
 
@@ -791,6 +823,12 @@ impl<N: NodePrimitives> StaticFileProviderRW<N> {
                     None,
                     segment,
                 );
+
+                // Publish-on-rotation: place a committed (rows=0) snapshot of the freshly opened
+                // file into the shared cache so readers never self-load it before its first
+                // commit. `Self::open` already claimed ownership in the active-writer registry.
+                let new_range = self.writer_fixed_range();
+                self.reader().publish_writer_snapshot(segment, new_range)?;
             }
         }
 

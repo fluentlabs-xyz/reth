@@ -21,7 +21,7 @@ use reth_storage_errors::provider::{ProviderError, ProviderResult};
 use reth_trie::{
     changesets::compute_trie_changesets,
     trie_cursor::{InMemoryTrieCursorFactory, TrieCursor, TrieCursorFactory},
-    TrieInputSorted,
+    HashedPostStateSorted, TrieInputSorted,
 };
 use reth_trie_common::updates::{StorageTrieUpdatesSorted, TrieUpdatesSorted};
 use std::{
@@ -78,14 +78,70 @@ where
         + BlockNumReader
         + StorageSettingsCache,
 {
+    // Single-block entry point: read both reverts from the database (the cumulative revert
+    // spans `(block+1)..=db_tip` and is read from scratch here). The range walk in
+    // `get_or_compute_range` instead maintains the cumulative revert incrementally and calls
+    // [`compute_block_trie_changesets_from_reverts`] directly to avoid the per-block
+    // from-scratch suffix read.
+    let individual_state_revert =
+        crate::state::from_reverts_auto(provider, block_number..=block_number)?;
+    let cumulative_state_revert = crate::state::from_reverts_auto(provider, (block_number + 1)..)?;
+
+    compute_block_trie_changesets_from_reverts(
+        provider,
+        block_number,
+        &individual_state_revert,
+        &cumulative_state_revert,
+    )
+}
+
+/// Computes trie changesets for a block from pre-collected state reverts.
+///
+/// This is the shared core of [`compute_block_trie_changesets`]. It takes the state reverts as
+/// arguments instead of reading them from the database, which lets the range walk in
+/// [`ChangesetCache::get_or_compute_range`] supply an *incrementally accumulated* cumulative
+/// revert rather than recomputing the whole `(block+1)..=db_tip` suffix from scratch for every
+/// block (an O(range²) walk → O(range)).
+///
+/// # Arguments
+///
+/// * `individual_state_revert` — the per-block revert, i.e. `from_reverts(block..=block)`.
+/// * `cumulative_state_revert` — the cumulative revert `from_reverts((block+1)..=db_tip)`,
+///   representing the state as it was just after `block` was processed.
+///
+/// The two reverts are mathematically identical whether read from scratch or accumulated
+/// incrementally (see the differential test), because `extend_ref_and_sort` gives the older
+/// block precedence — the same precedence the cumulative-suffix read uses (oldest occurrence
+/// wins).
+pub(crate) fn compute_block_trie_changesets_from_reverts<Provider>(
+    provider: &Provider,
+    block_number: BlockNumber,
+    individual_state_revert: &HashedPostStateSorted,
+    cumulative_state_revert: &HashedPostStateSorted,
+) -> Result<TrieUpdatesSorted, ProviderError>
+where
+    Provider: DBProvider
+        + StageCheckpointReader
+        + ChangeSetReader
+        + StorageChangeSetReader
+        + BlockNumReader
+        + StorageSettingsCache,
+{
     crate::with_adapter!(provider, |A| {
-        compute_block_trie_changesets_inner::<_, A>(provider, block_number)
+        compute_block_trie_changesets_from_reverts_inner::<_, A>(
+            provider,
+            block_number,
+            individual_state_revert,
+            cumulative_state_revert,
+        )
     })
 }
 
-fn compute_block_trie_changesets_inner<Provider, A>(
+fn compute_block_trie_changesets_from_reverts_inner<Provider, A>(
     provider: &Provider,
     block_number: BlockNumber,
+    individual_state_revert: &HashedPostStateSorted,
+    cumulative_state_revert: &HashedPostStateSorted,
 ) -> Result<TrieUpdatesSorted, ProviderError>
 where
     Provider: DBProvider
@@ -102,18 +158,13 @@ where
         "Computing block trie changesets from database state"
     );
 
-    // Step 1: Collect/calculate state reverts
-
-    // This is just the changes from this specific block
-    let individual_state_revert =
-        crate::state::from_reverts_auto(provider, block_number..=block_number)?;
-
-    // This reverts all changes from db tip back to just after block was processed
-    let cumulative_state_revert = crate::state::from_reverts_auto(provider, (block_number + 1)..)?;
+    // Step 1: Collect/calculate state reverts (supplied by the caller).
+    // `cumulative_state_revert` reverts all changes from db tip back to just after `block`
+    // was processed; `individual_state_revert` is only the changes from this block.
 
     // This reverts all changes from db tip back to just after block-1 was processed
     let mut cumulative_state_revert_prev = cumulative_state_revert.clone();
-    cumulative_state_revert_prev.extend_ref_and_sort(&individual_state_revert);
+    cumulative_state_revert_prev.extend_ref_and_sort(individual_state_revert);
 
     // Step 2: Calculate cumulative trie updates revert for block-1
     // This gives us the trie state as it was after block-1 was processed
@@ -142,7 +193,7 @@ where
     // Use cumulative trie updates for block-1 as the node overlay and cumulative state for block
     let input = TrieInputSorted::new(
         Arc::new(cumulative_trie_updates_prev.clone()),
-        Arc::new(cumulative_state_revert),
+        Arc::new(cumulative_state_revert.clone()),
         prefix_sets,
     );
 
@@ -463,6 +514,24 @@ impl ChangesetCache {
             + BlockNumReader
             + StorageSettingsCache,
     {
+        self.get_or_compute_with(block_hash, block_number, || {
+            compute_block_trie_changesets(provider, block_number)
+        })
+    }
+
+    /// Cache/pending/compute core shared by [`Self::get_or_compute`] and the range walk.
+    ///
+    /// Checks the cache and any pending computation first; only on a genuine miss does it invoke
+    /// `compute` (which produces the changesets from the database) and insert the result.
+    ///
+    /// The range walk uses this to supply an incrementally accumulated cumulative revert to the
+    /// computation instead of the per-block from-scratch suffix read.
+    fn get_or_compute_with(
+        &self,
+        block_hash: B256,
+        block_number: u64,
+        compute: impl FnOnce() -> Result<TrieUpdatesSorted, ProviderError>,
+    ) -> ProviderResult<Arc<TrieUpdatesSorted>> {
         // Try cache first, and if missing, check for a pending computation.
         let pending = {
             let cache = self.inner.read();
@@ -520,7 +589,7 @@ impl ChangesetCache {
         let start = Instant::now();
 
         // Compute changesets
-        let changesets = compute_block_trie_changesets(provider, block_number)?;
+        let changesets = compute()?;
 
         let changesets = Arc::new(changesets);
         let elapsed = start.elapsed();
@@ -617,6 +686,23 @@ impl ChangesetCache {
         // take precedence when there are conflicting updates.
         let mut accumulated_reverts = TrieUpdatesSorted::default();
 
+        // Maintain the cumulative *state* revert incrementally as the walk descends.
+        //
+        // The per-block changeset computation needs `from_reverts((block+1)..=db_tip)` — the
+        // state as it was just after `block` was processed. Computing that from scratch for
+        // every block makes the walk O(range²) in changeset-entry reads (the deceleration this
+        // fix targets). Instead we start from the suffix above `end_block` and extend it by one
+        // block's per-block revert on each descending step:
+        //
+        //   cumulative(block-1) == cumulative(block).extend(individual(block))
+        //
+        // which is exactly the `from_reverts((block)..=db_tip)` set (`extend_ref_and_sort` gives
+        // the older block precedence — the same "oldest occurrence wins" rule the suffix read
+        // uses), so the accumulated cumulative is byte-identical to the from-scratch read while
+        // costing only one per-block revert read (O(1) amortized) per step → the walk is O(range).
+        let mut cumulative_state_revert =
+            crate::state::from_reverts_auto(provider, (end_block + 1)..)?;
+
         for block_number in range.rev() {
             // Get the block hash for this block number
             let block_hash = provider.block_hash(block_number)?.ok_or_else(|| {
@@ -633,14 +719,30 @@ impl ChangesetCache {
                 "Looked up block hash for block number in range"
             );
 
-            // Get changesets from cache (or compute on-the-fly)
-            let changesets = self.get_or_compute(block_hash, block_number, provider)?;
+            // Per-block state revert for this block only (cheap: one block's changesets).
+            let individual_state_revert =
+                crate::state::from_reverts_auto(provider, block_number..=block_number)?;
+
+            // Get changesets from cache (or compute on-the-fly using the incrementally
+            // accumulated cumulative revert instead of a from-scratch suffix read).
+            let changesets = self.get_or_compute_with(block_hash, block_number, || {
+                compute_block_trie_changesets_from_reverts(
+                    provider,
+                    block_number,
+                    &individual_state_revert,
+                    &cumulative_state_revert,
+                )
+            })?;
 
             // Overlay this block's changesets on top of accumulated reverts.
             // Since we iterate newest to oldest, older values are added last
             // and overwrite any conflicting newer values (oldest changeset values take
             // precedence).
             accumulated_reverts.extend_ref_and_sort(&changesets);
+
+            // Advance the cumulative state revert down to the next (older) block:
+            // cumulative(block-1) = cumulative(block) + individual(block).
+            cumulative_state_revert.extend_ref_and_sort(&individual_state_revert);
         }
 
         let elapsed = timer.elapsed();
@@ -893,11 +995,128 @@ impl ChangesetCacheInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::map::{B256Map, HashMap};
+    use alloy_primitives::{
+        map::{B256Map, HashMap},
+        Address, U256,
+    };
+    use reth_db_api::{
+        models::{AccountBeforeTx, BlockNumberAddress},
+        tables,
+        transaction::DbTxMut,
+    };
+    use reth_primitives_traits::{Account, StorageEntry};
+    use reth_provider::test_utils::create_test_provider_factory;
 
     // Helper function to create empty TrieUpdatesSorted for testing
     fn create_test_changesets() -> Arc<TrieUpdatesSorted> {
         Arc::new(TrieUpdatesSorted::new(vec![], B256Map::default()))
+    }
+
+    /// Differential test for the incremental cumulative-revert accumulation used by
+    /// [`ChangesetCache::get_or_compute_range`].
+    ///
+    /// The range walk maintains the cumulative state revert `from_reverts((block+1)..=db_tip)`
+    /// incrementally (extend by one block's per-block revert per descending step) instead of
+    /// recomputing it from scratch for every block. This test seeds a multi-block changeset
+    /// fixture with keys that overlap across blocks (exercising the "oldest occurrence wins"
+    /// precedence) and asserts, at every height, that:
+    ///
+    /// 1. the incrementally accumulated cumulative revert is byte-identical to the from-scratch
+    ///    `from_reverts_auto((block+1)..)` read, and
+    /// 2. the resulting per-block changesets from the incremental path
+    ///    ([`compute_block_trie_changesets_from_reverts`]) are byte-identical to the from-scratch
+    ///    path ([`compute_block_trie_changesets`]).
+    #[test]
+    fn incremental_cumulative_revert_matches_from_scratch() {
+        let factory = create_test_provider_factory();
+        let provider = factory.provider_rw().unwrap();
+        let tx = provider.tx_ref();
+
+        let addr_a = Address::with_last_byte(1);
+        let addr_b = Address::with_last_byte(2);
+        let addr_c = Address::with_last_byte(3);
+
+        let put_account = |block: u64, address: Address, nonce: u64| {
+            tx.put::<tables::AccountChangeSets>(
+                block,
+                AccountBeforeTx {
+                    address,
+                    info: Some(Account { nonce, balance: U256::from(nonce), bytecode_hash: None }),
+                },
+            )
+            .unwrap();
+        };
+        let put_storage = |block: u64, address: Address, slot: u64, value: u64| {
+            tx.put::<tables::StorageChangeSets>(
+                BlockNumberAddress((block, address)),
+                StorageEntry { key: B256::from(U256::from(slot)), value: U256::from(value) },
+            )
+            .unwrap();
+        };
+
+        let db_tip: u64 = 5;
+
+        // Block 1: addr_a (nonce 1), addr_b (nonce 1); storage a/slot1, b/slot2.
+        put_account(1, addr_a, 1);
+        put_account(1, addr_b, 1);
+        put_storage(1, addr_a, 1, 100);
+        put_storage(1, addr_b, 2, 200);
+
+        // Block 2: addr_a changes again (overlap -> block 1's revert must win in cumulative).
+        put_account(2, addr_a, 2);
+        put_storage(2, addr_a, 1, 101); // same slot as block 1 -> oldest (block 1) wins
+        put_storage(2, addr_c, 3, 300); // new slot/account
+
+        // Block 3: addr_c account, addr_b storage overlap.
+        put_account(3, addr_c, 3);
+        put_storage(3, addr_b, 2, 201); // overlaps block 1's b/slot2
+
+        // Block 4: no changes (empty block) — exercises empty per-block revert.
+
+        // Block 5 (db tip): addr_a again, new storage.
+        put_account(5, addr_a, 5);
+        put_storage(5, addr_a, 4, 500);
+
+        // Walk newest -> oldest exactly as get_or_compute_range does, maintaining the cumulative
+        // revert incrementally, and compare against the from-scratch computation at each height.
+        let mut cumulative =
+            crate::state::from_reverts_auto(&*provider, (db_tip + 1)..).unwrap();
+
+        for block in (1..=db_tip).rev() {
+            // (1) The incrementally accumulated cumulative must equal the from-scratch suffix read.
+            let expected_cumulative =
+                crate::state::from_reverts_auto(&*provider, (block + 1)..).unwrap();
+            assert_eq!(
+                cumulative, expected_cumulative,
+                "cumulative revert mismatch at block {block}"
+            );
+
+            let individual =
+                crate::state::from_reverts_auto(&*provider, block..=block).unwrap();
+
+            // (2) The per-block changesets from the incremental path must equal the from-scratch
+            // path. Both run against the same (empty) trie tables in this fixture, so any
+            // difference could only come from a divergent revert input.
+            let from_scratch = compute_block_trie_changesets(&*provider, block).unwrap();
+            let incremental = compute_block_trie_changesets_from_reverts(
+                &*provider,
+                block,
+                &individual,
+                &cumulative,
+            )
+            .unwrap();
+            assert_eq!(
+                from_scratch, incremental,
+                "block trie changesets mismatch at block {block}"
+            );
+
+            // Advance the cumulative down to the next (older) block.
+            cumulative.extend_ref_and_sort(&individual);
+        }
+
+        // After descending past block 1, the cumulative equals from_reverts(1..) = the full range.
+        let full = crate::state::from_reverts_auto(&*provider, 1..).unwrap();
+        assert_eq!(cumulative, full, "final cumulative should span the whole range");
     }
 
     #[test]

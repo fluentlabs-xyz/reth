@@ -98,6 +98,16 @@ pub enum NippyJarError {
     #[error("File is in an inconsistent state.")]
     InconsistentState,
 
+    /// A snapshot captured for reading was not internally consistent with the committed row
+    /// count. This is a transient race against a concurrent writer mid-append (readers observing
+    /// a file before its offsets/data/sidecar are fully published) or, failing a reload, genuine
+    /// corruption. Callers should treat it as retryable.
+    #[error("inconsistent static-file snapshot: {reason}")]
+    InconsistentSnapshot {
+        /// Human-readable description of which load-time invariant failed.
+        reason: String,
+    },
+
     /// A specified file is missing.
     #[error("Missing file: {}", .0.display())]
     MissingFile(PathBuf),

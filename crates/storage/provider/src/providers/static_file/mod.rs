@@ -15,7 +15,7 @@ mod metrics;
 #[cfg(test)]
 mod writer_tests;
 
-use reth_nippy_jar::NippyJar;
+use reth_nippy_jar::{DataReader, NippyJar, NippyJarError};
 use reth_static_file_types::{ChangesetOffsetReader, SegmentHeader, StaticFileSegment};
 use reth_storage_errors::provider::{ProviderError, ProviderResult};
 use std::{io, ops::Deref, sync::Arc};
@@ -34,26 +34,107 @@ pub struct LoadedJar {
 
 impl LoadedJar {
     fn new(jar: NippyJar<SegmentHeader>) -> ProviderResult<Self> {
-        match jar.open_data_reader() {
-            Ok(data_reader) => {
-                let mmap_handle = Arc::new(data_reader);
-
-                let csoff_reader = if jar.user_header().segment().is_change_based() {
-                    let csoff_path = jar.data_path().with_extension("csoff");
-                    let len = jar.user_header().changeset_offsets_len();
-                    match ChangesetOffsetReader::new(&csoff_path, len) {
-                        Ok(reader) => Some(reader),
-                        Err(err) if err.kind() == io::ErrorKind::NotFound && len == 0 => None,
-                        Err(err) => return Err(ProviderError::other(err)),
-                    }
-                } else {
-                    None
-                };
-
-                Ok(Self { jar, mmap_handle, csoff_reader })
+        // A jar handed to us may have been loaded off a file that a concurrent writer is
+        // mid-append on (the reader-side self-load race). Validate that the captured
+        // mmap/offset/sidecar triple is internally consistent with the committed row count; on
+        // the first failure reload once from disk (absorbing a transient race), then surface a
+        // typed `InconsistentSnapshot` error instead of caching a torn view that would poison
+        // every subsequent read.
+        let data_path = jar.data_path().to_path_buf();
+        match Self::load_validated(jar) {
+            Ok(loaded) => Ok(loaded),
+            Err(_first) => {
+                let jar = NippyJar::load(&data_path).map_err(ProviderError::other)?;
+                Self::load_validated(jar).map_err(ProviderError::other)
             }
-            Err(e) => Err(ProviderError::other(e)),
         }
+    }
+
+    /// Opens the mmap and changeset-sidecar readers for `jar` and validates that the captured
+    /// snapshot is internally consistent (see [`Self::validate_snapshot`]). Returns a
+    /// [`NippyJarError`] on any inconsistency so [`Self::new`] can decide whether to reload or
+    /// surface it.
+    fn load_validated(jar: NippyJar<SegmentHeader>) -> Result<Self, NippyJarError> {
+        let data_reader = jar.open_data_reader()?;
+
+        Self::validate_snapshot(&jar, &data_reader)?;
+
+        let mmap_handle = Arc::new(data_reader);
+
+        let csoff_reader = if jar.user_header().segment().is_change_based() {
+            let csoff_path = jar.data_path().with_extension("csoff");
+            let len = jar.user_header().changeset_offsets_len();
+            match ChangesetOffsetReader::new(&csoff_path, len) {
+                Ok(reader) => Some(reader),
+                Err(err) if err.kind() == io::ErrorKind::NotFound && len == 0 => None,
+                Err(err) => return Err(NippyJarError::Disconnect(err)),
+            }
+        } else {
+            None
+        };
+
+        Ok(Self { jar, mmap_handle, csoff_reader })
+    }
+
+    /// Load-time validation belt (defense-in-depth for the torn-read race).
+    ///
+    /// Verifies that the mmap/offset/sidecar triple the snapshot just captured covers the
+    /// committed row count. Every invariant is derived purely from the format's own durable
+    /// commit ordering (`data -> offsets -> config(rows)`, and — for changeset segments — the
+    /// sidecar synced before the low-level commit), so it holds for every legitimately committed
+    /// file (including empty and legacy ones) and only trips on a torn read or genuine
+    /// corruption.
+    fn validate_snapshot(
+        jar: &NippyJar<SegmentHeader>,
+        data_reader: &DataReader,
+    ) -> Result<(), NippyJarError> {
+        // (1) The offsets file carries one offset per committed value plus a terminal offset
+        // (which equals the data length). Fewer offsets than that means the writer had not yet
+        // finished publishing the offsets table for the rows the config already advertises.
+        let expected_offsets = jar.rows() * jar.columns() + 1;
+        let offsets_count = data_reader.offsets_count()?;
+        if offsets_count < expected_offsets {
+            return Err(NippyJarError::InconsistentSnapshot {
+                reason: format!(
+                    "offsets count {offsets_count} < expected {expected_offsets} \
+                     (rows {}, columns {})",
+                    jar.rows(),
+                    jar.columns(),
+                ),
+            });
+        }
+
+        // (2) The terminal offset must not point past the end of the mmapped data file.
+        let last_offset = data_reader.reverse_offset(0)? as usize;
+        let data_len = data_reader.size();
+        if last_offset > data_len {
+            return Err(NippyJarError::InconsistentSnapshot {
+                reason: format!("terminal offset {last_offset} > data size {data_len}"),
+            });
+        }
+
+        // (3) The changeset sidecar must hold at least the committed number of records.
+        if jar.user_header().segment().is_change_based() {
+            let committed_len = jar.user_header().changeset_offsets_len();
+            if committed_len > 0 {
+                // Record size mirrors `ChangesetOffsetReader::RECORD_SIZE` (offset u64 + count u64).
+                const CSOFF_RECORD_SIZE: u64 = 16;
+                let expected_bytes = committed_len * CSOFF_RECORD_SIZE;
+                let csoff_path = jar.data_path().with_extension("csoff");
+                let actual_bytes =
+                    std::fs::metadata(&csoff_path).map_err(NippyJarError::Disconnect)?.len();
+                if actual_bytes < expected_bytes {
+                    return Err(NippyJarError::InconsistentSnapshot {
+                        reason: format!(
+                            "changeset sidecar {actual_bytes} bytes < expected {expected_bytes} \
+                             ({committed_len} records)"
+                        ),
+                    });
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Returns a clone of the mmap handle that can be used to instantiate a cursor.
@@ -1416,5 +1497,209 @@ mod tests {
         assert!(result.is_some(), "Should be able to read the changeset entry");
         let entry = result.unwrap();
         assert_eq!(entry.value, U256::from(42));
+    }
+
+    // --- Committed-snapshot reads (Family 1 torn-read root fix) ---
+
+    /// Writes `blocks` committed `AccountChangeSets` blocks (5 changes each) to a fresh
+    /// `blocks_per_file = 10` file.
+    fn write_account_changesets(sf_rw: &StaticFileProvider<EthPrimitives>, blocks: u64) {
+        let mut writer = sf_rw.latest_writer(StaticFileSegment::AccountChangeSets).unwrap();
+        for block_num in 0..blocks {
+            let changeset: Vec<AccountBeforeTx> = (0..5u8)
+                .map(|i| {
+                    let mut addr = Address::ZERO;
+                    addr.0[0] = block_num as u8;
+                    addr.0[1] = i;
+                    AccountBeforeTx {
+                        address: addr,
+                        info: Some(Account {
+                            nonce: block_num,
+                            balance: U256::from(block_num),
+                            bytecode_hash: None,
+                        }),
+                    }
+                })
+                .collect();
+            writer.append_account_changeset(changeset, block_num).unwrap();
+        }
+        writer.commit().unwrap();
+    }
+
+    /// A writer-idle reader that self-loads a file whose changeset sidecar was truncated below
+    /// the header's committed length must surface a typed, retryable `InconsistentSnapshot`
+    /// error instead of caching a torn view (the load-time validation belt, sidecar arm).
+    #[test]
+    fn test_torn_sidecar_self_load_errors_not_torn() {
+        let (static_dir, _) = create_test_static_files_dir();
+        let range = find_fixed_range(9, 10);
+        let sidecar_path = static_dir
+            .as_ref()
+            .join(StaticFileSegment::AccountChangeSets.filename(&range))
+            .with_extension("csoff");
+
+        {
+            let sf_rw: StaticFileProvider<EthPrimitives> =
+                StaticFileProviderBuilder::read_write(&static_dir)
+                    .with_blocks_per_file(10)
+                    .build()
+                    .unwrap();
+            write_account_changesets(&sf_rw, 10);
+        }
+
+        // Manufacture a torn snapshot: sidecar shorter than the header's committed record count.
+        let file = fs::OpenOptions::new().write(true).open(&sidecar_path).unwrap();
+        file.set_len(7 * 16).unwrap();
+        file.sync_all().unwrap();
+
+        let sf: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_write(&static_dir)
+                .with_blocks_per_file(10)
+                .build()
+                .unwrap();
+        sf.initialize_index().unwrap();
+
+        let err = sf
+            .get_segment_provider_for_block(StaticFileSegment::AccountChangeSets, 8, None)
+            .expect_err("torn sidecar must surface an error, never a torn read");
+        assert!(
+            err.to_string().contains("inconsistent static-file snapshot"),
+            "expected InconsistentSnapshot, got: {err}"
+        );
+    }
+
+    /// Same as above for the offsets table (segment-agnostic arm): an offsets file that no longer
+    /// covers the committed rows — as a reader racing a mid-append writer could momentarily
+    /// observe — degrades to a typed error rather than a torn read.
+    #[test]
+    fn test_torn_offsets_self_load_errors_not_torn() {
+        let (static_dir, _) = create_test_static_files_dir();
+        let range = find_fixed_range(9, 10);
+        let offsets_path = static_dir
+            .as_ref()
+            .join(StaticFileSegment::Headers.filename(&range))
+            .with_extension("off");
+
+        {
+            let sf_rw: StaticFileProvider<EthPrimitives> =
+                StaticFileProviderBuilder::read_write(&static_dir)
+                    .with_blocks_per_file(10)
+                    .build()
+                    .unwrap();
+            let mut w = sf_rw.latest_writer(StaticFileSegment::Headers).unwrap();
+            let mut header = Header::default();
+            for num in 0..10 {
+                header.number = num;
+                w.append_header(&header, &BlockHash::default()).unwrap();
+            }
+            w.commit().unwrap();
+        }
+
+        // Drop every offset but the size byte: the table no longer covers the committed rows.
+        let file = fs::OpenOptions::new().write(true).open(&offsets_path).unwrap();
+        file.set_len(1).unwrap();
+        file.sync_all().unwrap();
+
+        let sf: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_write(&static_dir)
+                .with_blocks_per_file(10)
+                .build()
+                .unwrap();
+        sf.initialize_index().unwrap();
+
+        let err = sf
+            .get_segment_provider_for_block(StaticFileSegment::Headers, 5, None)
+            .expect_err("torn offsets must surface an error, never a torn read");
+        assert!(
+            err.to_string().contains("inconsistent static-file snapshot"),
+            "expected InconsistentSnapshot, got: {err}"
+        );
+    }
+
+    /// A genuinely writer-idle, cleanly committed file still self-loads on a cache miss (the
+    /// guard and validation belt must not regress read-only / cross-process reads).
+    #[test]
+    fn test_writer_idle_self_load_still_works() {
+        let (static_dir, _) = create_test_static_files_dir();
+        {
+            let sf_rw: StaticFileProvider<EthPrimitives> =
+                StaticFileProviderBuilder::read_write(&static_dir)
+                    .with_blocks_per_file(10)
+                    .build()
+                    .unwrap();
+            write_account_changesets(&sf_rw, 10);
+        }
+
+        let sf: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_write(&static_dir)
+                .with_blocks_per_file(10)
+                .build()
+                .unwrap();
+        sf.initialize_index().unwrap();
+
+        let provider = sf
+            .get_segment_provider_for_block(StaticFileSegment::AccountChangeSets, 8, None)
+            .expect("clean idle file must self-load");
+        let offsets = provider.read_changeset_offsets().unwrap();
+        assert_eq!(offsets.unwrap().len(), 10);
+    }
+
+    /// Publish-on-open: while a writer is active on a file, concurrent reads observe only the
+    /// committed snapshot — committed rows are visible, the uncommitted tail is a clean
+    /// `Ok(None)` — never a torn read of the live append region.
+    #[test]
+    fn test_publish_on_open_committed_snapshot() {
+        let (static_dir, _) = create_test_static_files_dir();
+        let sf_rw: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_write(&static_dir)
+                .with_blocks_per_file(100)
+                .build()
+                .unwrap();
+
+        let mut header = Header::default();
+        let mut w = sf_rw.latest_writer(StaticFileSegment::Headers).unwrap();
+        for num in 0..5 {
+            header.number = num;
+            w.append_header(&header, &BlockHash::default()).unwrap();
+        }
+        w.commit().unwrap();
+        // Append past the commit point WITHOUT committing, writer still active.
+        for num in 5..10 {
+            header.number = num;
+            w.append_header(&header, &BlockHash::default()).unwrap();
+        }
+
+        assert!(sf_rw.header_by_number(4).unwrap().is_some(), "committed row visible");
+        assert!(sf_rw.header_by_number(8).unwrap().is_none(), "uncommitted tail invisible");
+    }
+
+    /// After the writer rotates onto a new file, the rotated-past file remains a readable
+    /// committed snapshot and the freshly opened file's uncommitted rows are invisible — the
+    /// rotation path publishes rather than leaving a self-loadable live file behind.
+    #[test]
+    fn test_rotation_publishes_committed_snapshot() {
+        let (static_dir, _) = create_test_static_files_dir();
+        let sf_rw: StaticFileProvider<EthPrimitives> =
+            StaticFileProviderBuilder::read_write(&static_dir)
+                .with_blocks_per_file(5)
+                .build()
+                .unwrap();
+
+        let mut header = Header::default();
+        let mut w = sf_rw.latest_writer(StaticFileSegment::Headers).unwrap();
+        // Fill and commit the first file [0..=4].
+        for num in 0..5 {
+            header.number = num;
+            w.append_header(&header, &BlockHash::default()).unwrap();
+        }
+        w.commit().unwrap();
+        // Cross the rotation boundary into file [5..=9] and append uncommitted rows.
+        for num in 5..8 {
+            header.number = num;
+            w.append_header(&header, &BlockHash::default()).unwrap();
+        }
+
+        assert!(sf_rw.header_by_number(3).unwrap().is_some(), "rotated-past file readable");
+        assert!(sf_rw.header_by_number(6).unwrap().is_none(), "uncommitted rotated tail invisible");
     }
 }
