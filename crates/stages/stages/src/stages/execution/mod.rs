@@ -1,5 +1,5 @@
 use crate::stages::MERKLE_STAGE_DEFAULT_INCREMENTAL_THRESHOLD;
-use alloy_consensus::BlockHeader;
+use alloy_consensus::{BlockHeader, Transaction, TxReceipt};
 use alloy_primitives::BlockNumber;
 use num_traits::Zero;
 use reth_chainspec::{ChainSpecProvider, EthereumHardforks};
@@ -9,14 +9,16 @@ use reth_db::{static_file::HeaderMask, tables};
 use reth_evm::{execute::Executor, metrics::ExecutorMetrics, ConfigureEvm};
 use reth_execution_types::Chain;
 use reth_exex::{ExExManagerHandle, ExExNotification, ExExNotificationSource};
-use reth_primitives_traits::{format_gas_throughput, BlockBody, NodePrimitives};
+use reth_primitives_traits::{
+    format_gas_throughput, Block, BlockBody, NodePrimitives, RecoveredBlock,
+};
 use reth_provider::{
     providers::{StaticFileProvider, StaticFileWriter},
     BlockHashReader, BlockReader, DBProvider, EitherWriter, ExecutionOutcome, HeaderProvider,
     LatestStateProviderRef, OriginalValuesKnown, ProviderError, StateWriteConfig, StateWriter,
     StaticFileProviderFactory, StatsReader, StoragePath, StorageSettingsCache, TransactionVariant,
 };
-use reth_revm::database::StateProviderDatabase;
+use reth_revm::{database::StateProviderDatabase, Database, State};
 use reth_stages_api::{
     BlockErrorKind, CheckpointBlockRange, EntitiesCheckpoint, ExecInput, ExecOutput,
     ExecutionCheckpoint, ExecutionStageThresholds, Stage, StageCheckpoint, StageError, StageId,
@@ -259,6 +261,70 @@ where
     }
 }
 
+/// Emit per-transaction forensics for a block that FAILED post-execution validation
+/// in the Execution stage (e.g. a `BlockGasUsed` block-gas-used mismatch — the
+/// signature of a re-execution divergence). For each transaction: its index, the
+/// destination address (or `CREATE`), the gas the re-execution actually charged
+/// (derived from the receipts' cumulative gas), and — for a `Call` — whether the
+/// target address HOLDS CODE in the divergent executing state (`state`, consumed
+/// from the executor at the failure point). The tell-tale of the soak-v43 wedge is a
+/// fat Call re-charging only the ~21_000 base cost against a `target_has_code=false`.
+///
+/// Cheap by construction: runs ONLY on the already-failing error path, one state
+/// lookup per transaction, no behaviour change.
+fn log_post_execution_divergence<B, R, DB>(
+    block_number: BlockNumber,
+    block: &RecoveredBlock<B>,
+    receipts: &[R],
+    mut state: State<DB>,
+) where
+    B: Block,
+    R: TxReceipt,
+    DB: Database,
+{
+    let mut prev_cumulative_gas = 0u64;
+    for (index, tx) in block.body().transactions().iter().enumerate() {
+        let gas_used = receipts
+            .get(index)
+            .map(|receipt| {
+                let cumulative = receipt.cumulative_gas_used();
+                let gas = cumulative.saturating_sub(prev_cumulative_gas);
+                prev_cumulative_gas = cumulative;
+                gas
+            })
+            .unwrap_or_default();
+        match tx.to() {
+            Some(to) => {
+                // `Ok(None)` (absent account) or a probe error both read as "no code".
+                let target_has_code = state
+                    .basic(to)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|acc| !acc.is_empty_code_hash());
+                warn!(
+                    target: "sync::stages::execution",
+                    block = block_number,
+                    tx_index = index,
+                    to = %to,
+                    gas_used,
+                    target_has_code,
+                    "post-execution divergence: transaction Call target"
+                );
+            }
+            None => {
+                warn!(
+                    target: "sync::stages::execution",
+                    block = block_number,
+                    tx_index = index,
+                    create = true,
+                    gas_used,
+                    "post-execution divergence: contract-creation transaction"
+                );
+            }
+        }
+    }
+}
+
 impl<E, Provider> Stage<Provider> for ExecutionStage<E>
 where
     E: ConfigureEvm,
@@ -358,6 +424,21 @@ where
             })?;
 
             if let Err(err) = self.consensus.validate_block_post_execution(&block, &result, None) {
+                // FORENSICS (error path only): a post-execution validation failure —
+                // notably `BlockGasUsed` (block gas used mismatch) — is the signature of
+                // a re-execution DIVERGENCE (soak-v43 bad-ancestor wedge: a ~570k-gas tx
+                // re-charging the ~21_000 base cost, i.e. a Call to an address that is
+                // code-LESS in the replayed state). Emit per-tx forensics before bailing:
+                // index, destination (or CREATE), the gas this run actually charged, and
+                // whether the Call target holds code in the DIVERGENT executing state.
+                // Consuming the executor into its `State` is safe here — this branch
+                // returns immediately, so the executor is never used again.
+                log_post_execution_divergence(
+                    block_number,
+                    &block,
+                    &result.receipts,
+                    executor.into_state(),
+                );
                 return Err(StageError::Block {
                     block: Box::new(block.block_with_parent()),
                     error: BlockErrorKind::Validation(err),
